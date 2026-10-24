@@ -31,7 +31,7 @@
   "scripts": {
     "start": "electron .",
     "server": "node server.js",
-    "test": "node --test --test-concurrency=1 test/",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
     "i18n": "node tools/i18n-keys.js",
     "bench": "node tools/bench.js 10000 30 8 500",
     "demo:report": "node tools/report-demo.js 6000 10000 1000 10",
