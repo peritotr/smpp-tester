@@ -1,28 +1,53 @@
+<div align="center">
+
+<img src="build/icon.png" width="96" alt="SMPP Tester icon">
+
 # SMPP Tester
 
-**SMPP client, load tester and mock vendor (SMSC) in one tool — with performance reports that tell you where your platform starts to slow down.**
+**Find out where your SMS platform starts to slow down — before your customers do.**
 
-Use it as a desktop app (macOS, Windows, Linux) for quick checks, or run it on a server with Docker and drive it from your browser for serious load tests.
+An SMPP test client, a 10,000 TPS load generator and a mock SMSC in one tool.<br>
+It plays **both ends** of your platform at once and writes the performance report for you.
+
+[![CI](https://github.com/peritotr/smpp-tester/actions/workflows/ci.yml/badge.svg)](https://github.com/peritotr/smpp-tester/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/peritotr/smpp-tester?display_name=tag&sort=semver)](https://github.com/peritotr/smpp-tester/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Docker-555)
+![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white)
 
 [Türkçe](README.tr.md) · [Server setup guide](docs/server-setup.md) · [Changelog](CHANGELOG.md)
+
+</div>
 
 ![Load test view](docs/screenshots/load-test.png)
 
 ## Why
 
-When you build or operate an SMSC, an SMS gateway or an aggregator hub, you need to answer questions like:
+Every SMS platform eventually meets the same questions — usually in production, at the worst possible moment:
 
-- How many TPS does the platform really sustain, and at what load does latency start to climb?
-- Does every accepted message reach the downstream vendor — exactly once?
-- How long do DLRs take to come back, and does that change under load?
-- What happens when a vendor throttles, slows down or disconnects?
+- How many TPS does it **really** sustain, and at what load does latency start to climb?
+- Does every accepted message reach the downstream vendor — **exactly once**?
+- How long do DLRs take to come back, and what happens to that under load?
+- What does the platform do when a vendor throttles, slows down or drops the connection?
 
-SMPP Tester can act as **both ends** of your platform at the same time: a customer (ESME) sending traffic in, and a vendor (SMSC) receiving the routed traffic and returning DLRs. Because it sees both sides, it can measure end-to-end latency, loss and duplicates through your platform.
+Generic load tools only see one side of the platform: they can tell you how fast it *accepts* messages, not what happens to them afterwards. SMPP Tester sits on **both sides**. It is the customer (ESME) pushing traffic in and the vendor (SMSC) receiving the routed traffic and sending DLRs back. Every message carries an invisible marker, so the tool can follow it through your platform and measure what no single-sided tool can: **end-to-end latency, loss and duplicate delivery**.
 
 ```
 SMPP Tester (client) ──submit_sm──▶  YOUR PLATFORM  ──submit_sm──▶  SMPP Tester (vendor)
           ◀────────── DLR ─────────                ◀──── DLR ─────
 ```
+
+When the run ends, you don't get a wall of numbers. You get a report that says, in plain language, *"the platform is clean up to 6,000 TPS; latency rose at the 7,000 TPS step; likely cause: backpressure — responses slowed down and the window filled up"*, with the charts to back it up.
+
+### Highlights
+
+- **10,000 TPS with DLRs** from a 2-vCPU machine, with client and mock vendor on the same box
+- **Step tests** that find the knee point automatically
+- **End-to-end tracking** through your platform: loss, duplicates, latency
+- **A mock vendor you can misbehave on purpose**: throttling, slow responses, failing DLRs, a queue that backs up
+- **Pass / fail against your SLA**, saved reports, PDF export
+- **Desktop or server**: the same UI as a native app or behind a password in your browser
+- **No framework, no database, no build step for the UI**: about 3,500 lines you can read in an afternoon
 
 ## Features
 
@@ -128,7 +153,63 @@ A session can carry roughly `window ÷ response time` messages per second. Size 
 - **Step status** — a step is *saturated* when its median accepted TPS is below 95% of the step target, and *latency up* when its p95 is above the onset threshold.
 - **Peak capacity** — best 10-second average of accepted TPS.
 
+## Under the hood
+
+```mermaid
+flowchart LR
+  subgraph UI["Browser or Electron window"]
+    V["Plain HTML / CSS / JS<br/>canvas charts · i18n"]
+  end
+  subgraph Host["Main process: Electron main.js or Node server.js"]
+    C["Interactive SMPP client"]
+    R["Report archive<br/>+ analysis"]
+  end
+  subgraph W1["Child process"]
+    L["Load engine<br/>N binds · token bucket"]
+  end
+  subgraph W2["Child process"]
+    M["Mock vendor (SMSC)<br/>raw TCP sockets"]
+  end
+  P[("Your SMPP platform")]
+  V <-- "IPC / WebSocket" --> Host
+  Host <-- IPC --> L
+  Host <-- IPC --> M
+  C -- SMPP --> P
+  L -- "submit_sm" --> P
+  P -- "submit_sm (routed)" --> M
+  M -- "deliver_sm (DLR)" --> P
+  P -- "deliver_sm (DLR)" --> L
+```
+
+**One codebase, two shells.** The SMPP client, load engine, mock vendor and analysis are plain Node.js modules. The desktop app wraps them in Electron (`main.js` + `preload.js`). The server edition wraps the same modules in a small HTTP + WebSocket server (`server.js`). The UI does not know which one it is talking to: `window.api` is supplied either by Electron's preload or by `ui/web-api.js` over a WebSocket.
+
+**Measurement stays honest.** The load engine and the mock vendor each run in their own process (Electron `utilityProcess` on desktop, `child_process.fork` on the server). Each gets its own CPU core, and the UI can never slow the measurement down.
+
+**How it reaches 10k TPS in JavaScript:**
+- Each test message is encoded **once** into a PDU template. Per message, the engine only patches the bytes that change: sequence number, random recipient digits, end-to-end marker. That avoids building objects for every message.
+- A **token bucket** ticks every 2 ms. Writes are batched per socket and flushed with a single `socket.write`.
+- The **window** is enforced per session, so the engine never floods a platform that has stopped answering. Throttle responses shrink the rate multiplicatively, and it recovers over 3 s.
+- The mock vendor skips the general-purpose PDU parser. It reads only the fields it needs straight from the TCP stream and coalesces responses per tick.
+- Latency is recorded into **logarithmic histograms** (~3% buckets), so p50/p95/p99 cost O(1) memory however long the test runs.
+
+**Analysis you can trust.** `ui/analysis.js` is a pure function from per-second rows to findings. The same code renders the report in the browser and summarises it for the archive in Node. It is covered by tests that run a real step test against a capacity-limited vendor and assert that the knee is found at the right step.
+
+### Tech stack
+
+| Layer | Built with |
+| --- | --- |
+| SMPP protocol | [node-smpp](https://github.com/farhadi/node-smpp) for the interactive client and PDU encoding; hand-written byte-level fast paths in the load engine and mock vendor |
+| Runtime | Node.js 18+ (22 in Docker), worker processes over IPC |
+| Desktop | Electron 33, `electron-builder` for DMG / NSIS / portable / AppImage builds, passwords in the OS keychain (`safeStorage`) |
+| Server | Node `http` + [`ws`](https://github.com/websockets/ws), signed session cookies, AES-256-GCM for stored secrets, login rate limiting |
+| UI | Vanilla HTML/CSS/JS, hand-drawn `<canvas>` charts, light/dark theme, a small i18n layer (English, Turkish) |
+| Packaging | Docker (`node:22-alpine`, multi-arch amd64/arm64), Docker Compose with host networking |
+| Quality | `node:test` suite (client, load engine, analysis, translations), GitHub Actions for CI and releases |
+
+**Dependencies at runtime: two** (`smpp`, `ws`).
+
 ## Project layout
+
 
 | Path | |
 | --- | --- |

@@ -1,10 +1,17 @@
+<div align="center">
+
+<img src="build/icon.png" width="96" alt="SMPP Tester">
+
 # SMPP Tester
 
-**SMPP istemcisi, yük testi aracı ve sahte vendor (SMSC) tek uygulamada. Performans raporları, platformunun hangi noktada yavaşlamaya başladığını gösterir.**
+**SMS platformunun nerede yavaşlamaya başladığını müşterilerinden önce sen gör.**
 
-Hızlı denemeler için masaüstü uygulaması olarak (macOS, Windows, Linux), ciddi yük testleri için Docker ile bir sunucuda çalıştırıp tarayıcıdan kullanabilirsin.
+SMPP test istemcisi, 10.000 TPS'lik yük üreticisi ve sahte SMSC tek araçta.<br>
+Platformunun **iki ucunu birden** oynar ve performans raporunu senin yerine yazar.
 
 [English](README.md) · [Sunucu kurulum rehberi (EN)](docs/server-setup.md) · [Değişiklikler](CHANGELOG.md)
+
+</div>
 
 ![Yük testi ekranı](docs/screenshots/load-test.png)
 
@@ -31,6 +38,20 @@ SMPP Tester (client) ──submit_sm──▶  PLATFORMUN  ──submit_sm──
 - **Dahili vendor:** Platformun buna supplier olarak bağlanır. DLR gecikmesi, hata oranı, TPS limiti, yanıt gecikmesi ve işleme kapasitesi ayarlanabilir; işleme kapasitesi yavaş bir operatörü taklit eder. MO gönderebilir. **Uçtan uca takip** ile kayıp, çift teslim ve platform içi gecikme ölçülür.
 - **Performans raporları:** Her testten sonra otomatik kaydedilir, PDF, CSV veya JSON olarak alınabilir. **Gecikmenin başladığı an ve yük**, **doyma noktası** ve nedeni, kapasite ve gecikme kayması otomatik bulunur. Kabul ölçütlerine göre **GEÇTİ / KALDI** kararı verir.
 - **Arayüz İngilizce ve Türkçe** (sol üstten değiştirilir).
+
+## Nasıl çalışır
+
+Klasik yük araçları platformun yalnızca bir tarafını görür. Mesajı ne kadar hızlı kabul ettiğini söyleyebilirler, ama sonra ne olduğunu göremezler. SMPP Tester iki taraftadır. Her mesaja görünmez bir işaret koyar ve mesajı platformun içinden takip eder. Böylece **uçtan uca gecikmeyi, kaybı ve çift teslimi** ölçer.
+
+Test bitince sana sayı yığını yerine düz bir cümle verir. Örneğin: *"Platform 6.000 TPS'e kadar sorunsuz; 7.000 TPS basamağında gecikme arttı; olası neden: geri basınç."* Bu cümleyi destekleyen grafikler de raporda yer alır.
+
+**Teknolojiler:**
+- **Node.js:** SMPP çekirdeği. Protokol için [node-smpp](https://github.com/farhadi/node-smpp) kullanılıyor; yük motoru ve vendor için bayt seviyesinde hızlı yollar yazıldı.
+- **Electron:** Masaüstü uygulaması (macOS / Windows / Linux).
+- **HTTP + WebSocket:** Sunucu sürümü, Docker ile çalışır.
+- **Arayüz:** Çatısız HTML/CSS/JS, grafikler canvas ile çiziliyor.
+
+Yük motoru ve vendor ayrı süreçlerde çalışır, bu yüzden arayüz ölçümü bozmaz. Mesaj şablonu bir kez kodlanır, her mesajda yalnızca değişen baytlar yazılır. Hız token bucket ile kontrol edilir, gecikme logaritmik histogramlarda tutulur. Bu sayede 2 vCPU'da 10.000 TPS'e ulaşılır. Çalışma anında yalnızca **iki bağımlılık** var: `smpp` ve `ws`. Ayrıntılar İngilizce README'deki *Under the hood* bölümünde.
 
 ## Kurulum
 
