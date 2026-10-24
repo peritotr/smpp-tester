@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>SMPP load test report</title>
+<link rel="stylesheet" href="report.css">
+</head>
+<body>
+<div class="toolbar no-print">
+  <b data-i18n>SMPP Tester · Test report</b>
+  <span class="spacer"></span>
+  <select id="lang" title="Language / Dil"><option value="en">EN</option><option value="tr">TR</option></select>
+  <button id="bCsv" data-i18n>Download CSV</button>
+  <button id="bJson" data-i18n>Download JSON</button>
+  <button id="bPdf" class="primary" data-i18n>Save as PDF</button>
+</div>
+<main id="report"><p class="muted" data-i18n>Loading report…</p></main>
+<script src="i18n.js"></script>
+<script src="web-api.js"></script>
+<script src="analysis.js"></script>
+<script src="report.js"></script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+:root{
+  --bg:#f4f5f8; --paper:#fff; --line:#e2e5ec; --grid:#eceef3; --text:#1b1e26; --muted:#6a7183;
+  --accent:#3d8bfd; --ok:#1f9d5c; --warn:#c98a13; --err:#d94848; --violet:#8a63f0; --tint:#f2f4f8;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not(.print){ --bg:#0f1115; --paper:#161920; --line:#262b36; --grid:#20242d; --text:#e6e8ee; --muted:#8a91a3; --ok:#2fbf71; --warn:#e5a83b; --err:#ef5a5a; --violet:#9b7bff; --tint:#1c2029; }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.toolbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:8px;padding:10px 24px;background:var(--paper);border-bottom:1px solid var(--line)}
+.spacer{flex:1}
+select{font:inherit;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+button{font:inherit;color:var(--text);background:var(--paper);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+main{max-width:1040px;margin:24px auto;padding:0 24px 48px}
+.muted{color:var(--muted)} .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+.mono{font-family:var(--mono)}
+section{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:14px;break-inside:avoid}
+h1{font-size:21px;margin:0 0 2px} h2{font-size:14.5px;margin:0 0 10px} h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:14px 0 6px}
+.head{display:flex;gap:16px;align-items:flex-start}
+.head .meta{color:var(--muted);font-size:12.5px}
+.verdict{margin-left:auto;padding:8px 16px;border-radius:8px;font-weight:700;font-size:15px;white-space:nowrap}
+.verdict.pass{background:#1f9d5c1f;color:var(--ok)} .verdict.fail{background:#d948481f;color:var(--err)} .verdict.none{background:var(--tint);color:var(--muted)}
+.lead{font-size:15px;margin:14px 0 0;line-height:1.45}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px}
+.kpi{border:1px solid var(--line);border-radius:8px;padding:9px 12px}
+.kpi span{display:block;font-size:11.5px;color:var(--muted)}
+.kpi b{font-family:var(--mono);font-size:19px;font-weight:600}
+.kpi i{font-style:normal;font-size:11px;color:var(--muted);margin-left:3px}
+.findings{list-style:none;margin:0;padding:0}
+.findings li{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--grid)}
+.findings li:last-child{border-bottom:0}
+.dot{flex:none;width:9px;height:9px;border-radius:50%;margin-top:6px}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--err)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:6px 8px;border-bottom:1px solid var(--grid)}
+td.n{text-align:right;font-family:var(--mono)}
+th.n{text-align:right}
+tr.st-latency td{background:#c98a1314} tr.st-saturated td{background:#d9484814}
+.chart{position:relative}
+.chart canvas{width:100%;height:260px;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11.5px;color:var(--muted);margin:2px 0 6px}
+.legend i{display:inline-block;width:12px;height:3px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.legend i.dash{background:repeating-linear-gradient(90deg,currentColor 0 4px,transparent 4px 7px)!important;height:2px}
+.note{font-size:12px;color:var(--muted);margin:6px 0 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.kv td:first-child{color:var(--muted);width:44%}
+@media (max-width:760px){ .kpis{grid-template-columns:1fr 1fr} .grid2{grid-template-columns:1fr} .head{flex-direction:column} .verdict{margin-left:0} }
+@media print{
+  @page{size:A4;margin:12mm}
+  html,body{background:#fff;font-size:11.5px}
+  .no-print{display:none!important}
+  main{margin:0;padding:0;max-width:none}
+  section{border:1px solid #ddd;page-break-inside:avoid}
+  .chart canvas{height:220px}
+}

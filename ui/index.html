@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>SMPP Tester</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="drag"></div>
+<aside class="side">
+  <div class="brand"><span class="dot" id="stateDot"></span><b>SMPP Tester</b><span id="stateText" class="muted" data-i18n>disconnected</span>
+    <select id="lang" class="lang" title="Language / Dil"><option value="en">EN</option><option value="tr">TR</option></select></div>
+
+  <section>
+    <h3 data-i18n>Server</h3>
+    <div class="row">
+      <select id="profile"><option value="" data-i18n>— Profile —</option></select>
+      <button id="saveProfile" title="Save profile" data-i18n data-i18n-attr="title">Save</button>
+      <button id="delProfile" class="ghost" title="Delete profile" data-i18n data-i18n-attr="title">Delete</button>
+    </div>
+    <div class="row" id="nameRow" style="display:none"><input id="profileName" placeholder="Profile name" data-i18n-attr="placeholder"><button id="nameOk" class="primary">OK</button><button id="nameCancel" class="ghost" data-i18n>Cancel</button></div>
+    <label><span>Host</span> <input id="host" placeholder="smpp.example.com" spellcheck="false"></label>
+    <div class="grid2">
+      <label><span>Port</span> <input id="port" type="number" value="2775"></label>
+      <label><span>Bind</span> <select id="bindMode"><option value="trx">Transceiver</option><option value="tx">Transmitter</option><option value="rx">Receiver</option></select></label>
+    </div>
+    <label class="check"><input id="tls" type="checkbox"> <span>TLS (SSMPP)</span></label>
+    <label class="check sub" id="verifyWrap"><input id="verifyCert" type="checkbox"> <span data-i18n>Verify certificate</span></label>
+    <label><span>System ID</span> <input id="systemId" spellcheck="false"></label>
+    <label><span data-i18n>Password</span> <input id="password" type="password"></label>
+    <details>
+      <summary data-i18n>Advanced</summary>
+      <label><span>System type</span> <input id="systemType" spellcheck="false"></label>
+      <div class="grid2">
+        <label><span data-i18n>Interface ver.</span> <select id="interfaceVersion"><option value="52">3.4 (0x34)</option><option value="80">5.0 (0x50)</option><option value="51">3.3 (0x33)</option></select></label>
+        <label><span data-i18n>Enquire (s)</span> <input id="enquireLink" type="number" value="30"></label>
+        <label><span>Bind TON</span> <input id="addrTon" type="number" value="0"></label>
+        <label><span>Bind NPI</span> <input id="addrNpi" type="number" value="0"></label>
+      </div>
+      <label><span>Address range</span> <input id="addressRange" spellcheck="false"></label>
+      <label><span data-i18n>Connect timeout (s)</span> <input id="connectTimeout" type="number" value="10"></label>
+    </details>
+    <div class="row">
+      <button id="connect" class="primary" data-i18n>Connect</button>
+      <button id="disconnect" data-i18n>Disconnect</button>
+      <button id="enquire" class="ghost" title="Send enquire_link" data-i18n-attr="title">Ping</button>
+    </div>
+  </section>
+
+  <section>
+    <h3 data-i18n>Vendor (built-in SMSC)</h3>
+    <p class="muted small" data-i18n>A mock vendor/supplier your platform connects to. Accepts messages and generates DLRs. Also useful for trying the tool without an external server.</p>
+    <label><span data-i18n>Listen on</span> <select id="mockListen"><option value="127.0.0.1" data-i18n>This machine only (127.0.0.1)</option><option value="0.0.0.0" data-i18n>Network (0.0.0.0)</option></select></label>
+    <div class="grid2">
+      <label><span>Port</span> <input id="mockPort" type="number" value="2775"></label>
+      <label><span data-i18n>DLR delay (ms)</span> <input id="mockDelay" type="number" value="1500"></label>
+      <label title="Leave empty to accept any bind" data-i18n-attr="title"><span>Vendor system_id</span> <input id="mockSystemId" spellcheck="false" placeholder="(any)" data-i18n-attr="placeholder"></label>
+      <label><span data-i18n>Vendor password</span> <input id="mockPassword" type="password"></label>
+      <label><span data-i18n>DLR failure %</span> <input id="mockFail" type="number" value="0" min="0" max="100"></label>
+      <label title="Above this rate ESME_RTHROTTLED is returned (0 = unlimited)" data-i18n-attr="title"><span data-i18n>TPS limit</span> <input id="mockMaxTps" type="number" value="0" min="0"></label>
+      <label><span data-i18n>Response delay (ms)</span> <input id="mockRespDelay" type="number" value="0" min="0"></label>
+      <label title="The vendor processes at most this many messages per second; the rest wait in a queue and responses slow down (0 = unlimited). Simulates a slow operator." data-i18n-attr="title"><span data-i18n>Processing capacity (TPS)</span> <input id="mockCapacity" type="number" value="0" min="0"></label>
+      <label>&nbsp;<button id="mockToggle" data-i18n>Start</button></label>
+    </div>
+    <p id="mockAddr" class="small mono"></p>
+    <p id="mockStats" class="muted small mono"></p>
+    <div class="row"><input id="moText" placeholder="MO text" data-i18n-attr="placeholder" value="Test MO message"><button id="moSend" class="ghost" data-i18n>Send MO</button></div>
+  </section>
+</aside>
+
+<main>
+  <div class="modes">
+    <button data-mode="single" class="on" data-i18n>Single test</button>
+    <button data-mode="load" data-i18n>Load test</button>
+    <button data-mode="reports"><span data-i18n>Reports</span> <span id="cReports" class="cnt">0</span></button>
+  </div>
+  <div class="view on" id="view-single">
+  <section class="compose">
+    <div class="addr">
+      <label><span data-i18n>Sender</span> <input id="src" value="TEST" spellcheck="false"></label>
+      <label class="tn"><span>TON</span> <select id="srcTon"><option value="5" data-i18n>5 Alphanumeric</option><option value="1" data-i18n>1 International</option><option value="0" data-i18n>0 Unknown</option><option value="2" data-i18n>2 National</option><option value="3">3 Network</option><option value="6" data-i18n>6 Abbreviated</option></select></label>
+      <label class="tn"><span>NPI</span> <select id="srcNpi"><option value="0" data-i18n>0 Unknown</option><option value="1">1 ISDN</option></select></label>
+      <label><span data-i18n>Recipient</span> <input id="dst" placeholder="447700900123" spellcheck="false"></label>
+      <label class="tn"><span>TON</span> <select id="dstTon"><option value="1" data-i18n>1 International</option><option value="0" data-i18n>0 Unknown</option><option value="2" data-i18n>2 National</option></select></label>
+      <label class="tn"><span>NPI</span> <select id="dstNpi"><option value="1">1 ISDN</option><option value="0" data-i18n>0 Unknown</option></select></label>
+    </div>
+    <textarea id="text" rows="4" placeholder="Message text… ({n} is replaced with the sequence number in batch sends)" data-i18n-attr="placeholder">Hello, this is an SMPP test.</textarea>
+    <div class="opts">
+      <span id="counter" class="pill">—</span>
+      <label><span data-i18n>Encoding</span> <select id="encoding"><option value="auto" data-i18n>Auto</option><option value="gsm7">GSM-7</option><option value="latin1">Latin-1</option><option value="ucs2">UCS-2</option></select></label>
+      <label><span data-i18n>Long message</span> <select id="split"><option value="udh" data-i18n>UDH (concatenated)</option><option value="payload">message_payload</option><option value="none" data-i18n>Don't split</option></select></label>
+      <label class="check"><input id="dlr" type="checkbox" checked> <span data-i18n>Request DLR</span></label>
+      <label><span data-i18n>Count</span> <input id="count" type="number" value="1" min="1" class="num"></label>
+      <label><span>TPS</span> <input id="tps" type="number" value="10" min="1" class="num"></label>
+      <span class="spacer"></span>
+      <span id="progress" class="muted small"></span>
+      <button id="stop" class="ghost" disabled data-i18n>Stop</button>
+      <button id="send" class="primary" disabled data-i18n>Send</button>
+    </div>
+  </section>
+
+  <nav class="tabs">
+    <button data-tab="msgs" class="on"><span data-i18n>Sent</span> <span id="cMsgs" class="cnt">0</span></button>
+    <button data-tab="inbox"><span data-i18n>Inbox (DLR / MO)</span> <span id="cIn" class="cnt">0</span></button>
+    <button data-tab="log"><span data-i18n>PDU log</span> <span id="cLog" class="cnt">0</span></button>
+    <span class="spacer"></span>
+    <span id="stats" class="muted small"></span>
+    <label class="check small" id="hideEnq"><input type="checkbox" id="hideEnquire" checked> <span data-i18n>Hide enquire_link</span></label>
+    <button id="exportLog" class="ghost small" data-i18n>Export</button>
+    <button id="clear" class="ghost small" data-i18n>Clear</button>
+  </nav>
+
+  <div class="panes">
+    <div class="pane on" id="pane-msgs">
+      <table><thead><tr><th>#</th><th data-i18n>Time</th><th data-i18n>Recipient</th><th data-i18n>Text</th><th data-i18n>Enc.</th><th data-i18n>Parts</th><th>submit_sm_resp</th><th>message_id</th><th>ms</th><th>DLR</th><th>DLR ms</th></tr></thead><tbody id="msgBody"></tbody></table>
+    </div>
+    <div class="pane" id="pane-inbox">
+      <table><thead><tr><th data-i18n>Time</th><th data-i18n>Type</th><th data-i18n>From</th><th data-i18n>To</th><th data-i18n>Content</th></tr></thead><tbody id="inBody"></tbody></table>
+    </div>
+    <div class="pane" id="pane-log"><div id="logList" class="log"></div></div>
+  </div>
+  </div>
+
+  <div class="view" id="view-load">
+    <section class="compose">
+      <div class="addr">
+        <label><span data-i18n>Sender</span> <input id="lSrc" value="TEST" spellcheck="false"></label>
+        <label class="tn"><span>TON</span> <select id="lSrcTon"><option value="5" data-i18n>5 Alphanumeric</option><option value="1" data-i18n>1 International</option><option value="0" data-i18n>0 Unknown</option><option value="2" data-i18n>2 National</option><option value="3">3 Network</option><option value="6" data-i18n>6 Abbreviated</option></select></label>
+        <label class="tn"><span>NPI</span> <select id="lSrcNpi"><option value="0" data-i18n>0 Unknown</option><option value="1">1 ISDN</option></select></label>
+        <label title="Each X is replaced with a random digit per message. Separate several recipients with commas." data-i18n-attr="title"><span data-i18n>Recipient (X = random digit)</span> <input id="lDst" value="4477009XXXXX" spellcheck="false"></label>
+        <label class="tn"><span>TON</span> <select id="lDstTon"><option value="1" data-i18n>1 International</option><option value="0" data-i18n>0 Unknown</option><option value="2" data-i18n>2 National</option></select></label>
+        <label class="tn"><span>NPI</span> <select id="lDstNpi"><option value="1">1 ISDN</option><option value="0" data-i18n>0 Unknown</option></select></label>
+      </div>
+      <div class="lrow">
+        <label title="Shown in the reports list, e.g. 'v2.3 — 10k target'" data-i18n-attr="title"><span data-i18n>Test name</span> <input id="lName" placeholder="(optional)" data-i18n-attr="placeholder" spellcheck="false"></label>
+        <label class="grow"><span data-i18n>Message</span> <input id="lText" value="Load test message" spellcheck="false"></label>
+        <label><span data-i18n>Encoding</span> <select id="lEncoding"><option value="auto" data-i18n>Auto</option><option value="gsm7">GSM-7</option><option value="latin1">Latin-1</option><option value="ucs2">UCS-2</option></select></label>
+      </div>
+      <div class="lgrid">
+        <label title="Number of parallel binds (sessions)" data-i18n-attr="title"><span data-i18n>Sessions</span> <input id="lSessions" type="number" value="8" min="1" max="64"></label>
+        <label title="Max submit_sm in flight per session without a response" data-i18n-attr="title"><span>Window</span> <input id="lWindow" type="number" value="500" min="1" max="5000"></label>
+        <label><span data-i18n>Target TPS</span> <input id="lTps" type="number" value="1000" min="1" max="100000"></label>
+        <label title="Step: climbs from the start TPS to the target in steps; the best way to find the load at which latency starts" data-i18n-attr="title"><span data-i18n>Test type</span> <select id="lMode"><option value="duration" data-i18n>Constant — duration</option><option value="total" data-i18n>Constant — count</option><option value="steps" data-i18n>Step</option></select></label>
+        <label class="ls-fixed"><span id="lAmountLbl" data-i18n>Duration (s)</span> <input id="lAmount" type="number" value="60" min="1"></label>
+        <label class="ls-step" title="TPS of the first step" data-i18n-attr="title"><span data-i18n>Start TPS</span> <input id="lStepStart" type="number" value="1000" min="1"></label>
+        <label class="ls-step" title="TPS added at each step" data-i18n-attr="title"><span data-i18n>Increment (TPS)</span> <input id="lStepInc" type="number" value="1000" min="1"></label>
+        <label class="ls-step" title="Duration of each step" data-i18n-attr="title"><span data-i18n>Step (s)</span> <input id="lStepDur" type="number" value="60" min="5"></label>
+        <label title="Time to ramp up to the target TPS" data-i18n-attr="title"><span>Ramp-up (s)</span> <input id="lRamp" type="number" value="5" min="0"></label>
+        <label title="A submit_sm without a response within this time counts as a timeout" data-i18n-attr="title"><span data-i18n>Response limit (s)</span> <input id="lRespTimeout" type="number" value="10" min="1"></label>
+        <label><span data-i18n>DLR wait (s)</span> <input id="lDlrWait" type="number" value="15" min="0"></label>
+      </div>
+      <div class="opts">
+        <label class="check"><input id="lDlr" type="checkbox" checked> <span data-i18n>Request DLR</span></label>
+        <label class="check" title="A #T… marker is appended to the message; the built-in vendor picks it up to measure end-to-end latency, loss and duplicates" data-i18n-attr="title"><input id="lE2e" type="checkbox"> <span data-i18n>Measure end-to-end (client → platform → vendor)</span></label>
+        <label class="check" title="On ESME_RTHROTTLED / ESME_RMSGQFUL, slow down and resend the message" data-i18n-attr="title"><input id="lRetry" type="checkbox" checked> <span data-i18n>Slow down and retry on throttle</span></label>
+        <details class="crit"><summary data-i18n>Acceptance criteria</summary>
+          <div class="critgrid">
+            <label><span data-i18n>Response p95 ≤ (ms)</span> <input id="cP95" type="number" value="100" min="0"></label>
+            <label><span data-i18n>Response p99 ≤ (ms)</span> <input id="cP99" type="number" placeholder="—" min="0"></label>
+            <label><span data-i18n>End-to-end p95 ≤ (ms)</span> <input id="cE2e" type="number" value="1000" min="0"></label>
+            <label><span data-i18n>Errors ≤ %</span> <input id="cErr" type="number" value="0.1" min="0" step="0.01"></label>
+            <label><span data-i18n>Loss ≤ %</span> <input id="cLoss" type="number" value="0" min="0" step="0.01"></label>
+            <label title="Defaults to the target TPS when empty" data-i18n-attr="title"><span data-i18n>Min TPS</span> <input id="cMinTps" type="number" placeholder="target" data-i18n-attr="placeholder" min="0"></label>
+          </div>
+        </details>
+        <span class="spacer"></span>
+        <span id="lPhase" class="muted"></span>
+        <button id="lReport" class="ghost" style="display:none" data-i18n>Open report</button>
+        <button id="lCsv" class="ghost" disabled data-i18n>Export CSV</button>
+        <button id="lStop" class="ghost" disabled data-i18n>Stop</button>
+        <button id="lStart" class="primary" data-i18n>Start test</button>
+      </div>
+    </section>
+    <div class="lbody">
+      <div class="kpis">
+        <div class="kpi big"><span data-i18n>Current send rate</span><b id="kSentTps">—</b><i>TPS</i></div>
+        <div class="kpi big"><span data-i18n>Current success rate</span><b id="kOkTps">—</b><i>TPS</i></div>
+        <div class="kpi big"><span data-i18n>Average</span><b id="kAvgTps">—</b><i>TPS</i></div>
+        <div class="kpi big"><span data-i18n>Response p50 / p95 / p99</span><b id="kLat">—</b><i>ms</i></div>
+        <div class="kpi"><span data-i18n>Sent</span><b id="kSent">0</b></div>
+        <div class="kpi"><span data-i18n>Accepted</span><b id="kOk" class="ok">0</b></div>
+        <div class="kpi"><span data-i18n>Errors</span><b id="kErr" class="err">0</b></div>
+        <div class="kpi"><span>Throttle</span><b id="kThr" class="warn">0</b></div>
+        <div class="kpi"><span data-i18n>Timeouts</span><b id="kTo">0</b></div>
+        <div class="kpi"><span data-i18n>In flight</span><b id="kInfl">0</b></div>
+        <div class="kpi"><span>DLR ✓ / ✗</span><b id="kDlr">0</b></div>
+        <div class="kpi"><span data-i18n>DLR latency p50 / p95</span><b id="kDlrLat">—</b></div>
+      </div>
+      <div class="kpis e2e" id="e2ePanel" style="display:none">
+        <div class="kpi"><span data-i18n>Reached vendor</span><b id="eRx">0</b></div>
+        <div class="kpi"><span data-i18n>Not yet arrived / lost</span><b id="eMiss">0</b></div>
+        <div class="kpi"><span data-i18n>Duplicates</span><b id="eDup">0</b></div>
+        <div class="kpi"><span data-i18n>End-to-end p50 / p95 / p99</span><b id="eLat">—</b></div>
+      </div>
+      <div class="charts">
+        <div class="chart"><div class="ctitle"><span>TPS</span> <span class="legend" id="lgTps"></span></div><canvas id="cTps"></canvas></div>
+        <div class="chart"><div class="ctitle"><span data-i18n>submit_sm_resp latency (ms)</span> <span class="legend" id="lgLat"></span></div><canvas id="cLat"></canvas></div>
+      </div>
+      <div class="breakdown">
+        <div><h3 data-i18n>Error codes</h3><table><tbody id="tErrs"><tr><td class="muted">—</td></tr></tbody></table></div>
+        <div><h3 data-i18n>DLR statuses</h3><table><tbody id="tDlr"><tr><td class="muted">—</td></tr></tbody></table></div>
+        <div><h3 data-i18n>Notes</h3><p class="muted small" id="lNotes" data-i18n>Connection details come from the Server section on the left. TPS = submit_sm PDUs per second. Long text is sent in a single PDU using message_payload.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="view" id="view-reports">
+    <div class="rbar">
+      <span class="muted small" data-i18n>A report is saved automatically when each load test finishes. Click a row to open it.</span>
+      <span class="spacer"></span>
+      <button id="rRefresh" class="ghost small" data-i18n>Refresh</button>
+    </div>
+    <div class="rlist">
+      <table>
+        <thead><tr><th data-i18n>Date</th><th data-i18n>Name</th><th data-i18n>Type</th><th data-i18n>Target</th><th data-i18n>Capacity</th><th data-i18n>Latency onset</th><th>p95</th><th data-i18n>Result</th><th data-i18n>Issues</th><th></th></tr></thead>
+        <tbody id="rBody"><tr><td colspan="10" class="muted" data-i18n>No reports yet.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+<script src="i18n.js"></script>
+<script src="web-api.js"></script>
+<script src="renderer.js"></script>
+<script src="load.js"></script>
+<script src="reports-ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+services:
+  smpp-tester:
+    # Use the published image, or replace with `build: .` to build from source
+    image: ghcr.io/peritotr/smpp-tester:latest
+    container_name: smpp-tester
+    restart: unless-stopped
+    # Host networking: vendor ports chosen in the UI (e.g. 2776) are reachable immediately,
+    # and Docker's NAT layer stays out of the way at high TPS. Linux only.
+    network_mode: host
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

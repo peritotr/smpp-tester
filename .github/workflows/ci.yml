@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      - run: npm test
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: smpp-tester:ci
+      - name: Smoke test
+        run: |
+          mkdir -p data
+          docker run -d --name st -e UI_PASSWORD=ci-password-123 -p 8080:8080 -v "$PWD/data:/data" smpp-tester:ci
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8080/healthz && break; sleep 1; done
+          curl -fs http://127.0.0.1:8080/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)" = "303"
+          docker logs st

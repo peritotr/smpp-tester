@@ -1,0 +1,135 @@
+{
+  "name": "smpp-tester",
+  "productName": "SMPP Tester",
+  "version": "1.4.0",
+  "description": "SMPP test client, load tester and mock vendor (SMSC) with performance reports — desktop app and Docker web server",
+  "keywords": [
+    "smpp",
+    "smsc",
+    "sms",
+    "load-testing",
+    "performance",
+    "telecom",
+    "esme",
+    "dlr",
+    "electron"
+  ],
+  "homepage": "https://github.com/peritotr/smpp-tester#readme",
+  "bugs": {
+    "url": "https://github.com/peritotr/smpp-tester/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/peritotr/smpp-tester.git"
+  },
+  "license": "MIT",
+  "author": "Levent Karamanlı",
+  "main": "main.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.js",
+    "test": "node --test --test-concurrency=1 test/",
+    "i18n": "node tools/i18n-keys.js",
+    "bench": "node tools/bench.js 10000 30 8 500",
+    "demo:report": "node tools/report-demo.js 6000 10000 1000 10",
+    "dist": "electron-builder --publish never",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:linux": "electron-builder --linux --publish never"
+  },
+  "dependencies": {
+    "smpp": "0.6.0-rc.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "io.github.peritotr.smpptester",
+    "productName": "SMPP Tester",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "smpp-core.js",
+      "load-engine.js",
+      "load-worker.js",
+      "mock-smsc.js",
+      "mock-worker.js",
+      "ipc-child.js",
+      "hist.js",
+      "reports.js",
+      "ui/**",
+      "package.json"
+    ],
+    "artifactName": "SMPP-Tester-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "identity": null
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "SMPP-Tester-${version}-win-${arch}-setup.${ext}"
+    },
+    "linux": {
+      "category": "Development",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "SMPP-Tester-${version}-win-${arch}-portable.${ext}"
+    }
+  }
+}

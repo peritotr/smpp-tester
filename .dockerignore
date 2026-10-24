@@ -1,0 +1,14 @@
+node_modules
+data
+dist
+build
+test
+tools
+docs
+.github
+*.zip
+*.tar.gz
+main.js
+preload.js
+.env
+.git
