@@ -1,4 +1,13 @@
 # SMPP Tester — web server edition
+
+# Runtime dependencies (smpp, ws) are plain JavaScript, so they are installed once on the build machine's own
+# architecture and copied into every target image. npm never runs under QEMU emulation, where it crashed with
+# "illegal instruction" (exit 132) on the arm64 build.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
 FROM node:22-alpine
 
 ENV NODE_ENV=production \
@@ -7,8 +16,9 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 COPY package.json ./
+RUN apk add --no-cache su-exec
 # Only runtime dependencies (Electron and other desktop build tools are devDependencies)
-RUN apk add --no-cache su-exec && npm install --omit=dev --no-audit --no-fund && npm cache clean --force
+COPY --from=deps /app/node_modules ./node_modules
 
 COPY server.js smpp-core.js load-engine.js load-worker.js mock-smsc.js mock-worker.js sms-decode.js dlr-journal.js ipc-child.js hist.js reports.js ./
 COPY ui ./ui
