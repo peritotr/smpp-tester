@@ -5,6 +5,6 @@ module.exports = function channel(onMessage) {
     return msg => process.parentPort.postMessage(msg);
   }
   process.on('message', onMessage);
-  process.on('disconnect', () => process.exit(0));
+  process.on('disconnect', () => setImmediate(() => process.exit(0))); // let other disconnect handlers (e.g. closing the DLR journal) run first
   return msg => process.send && process.send(msg);
 };

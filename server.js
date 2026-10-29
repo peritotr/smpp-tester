@@ -134,6 +134,7 @@ function getLoad() {
 // Vendor process
 let mockProc = null, moWaiters = [], mockE2e = null, msgWaiters = new Map(), msgRid = 0;
 function startMock(opts) {
+  opts = { ...opts, stateDir: DATA_DIR }; // pending DLRs survive a restart (data/dlr-queue-<port>.log)
   return new Promise(resolve => {
     if (mockProc) mockProc.kill();
     const p = mockProc = fork(path.join(__dirname, 'mock-worker.js'), [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });

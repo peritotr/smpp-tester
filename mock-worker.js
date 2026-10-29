@@ -17,3 +17,6 @@ mock.on('listenError', m => send({ type: 'error', msg: m, text: m.text }));
 mock.on('log', m => send({ type: 'log', msg: m, text: m.text }));
 mock.on('stats', s => send({ type: 'stats', stats: s }));
 process.on('uncaughtException', e => send({ type: 'error', text: e.message }));
+// Stopped by the app or server (kill): close the DLR journal cleanly so nothing pending is lost
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { mock.stop(); } catch {} process.exit(0); });
+process.on('disconnect', () => { try { mock.stop(); } catch {} });

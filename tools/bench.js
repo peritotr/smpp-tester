@@ -9,7 +9,7 @@ const mock = fork(path.join(__dirname, '..', 'mock-worker.js'));
 const load = fork(path.join(__dirname, '..', 'load-worker.js'));
 let lastMock = {};
 mock.on('message', m => { if (m.type === 'log' || m.type === 'error') console.log('[vendor]', m.text); if (m.type === 'stats') lastMock = m.stats; });
-mock.send({ type: 'start', opts: { port, dlrDelay: 500, failRate: 0.02, maxTps } });
+mock.send({ type: 'start', opts: { port, dlrDelay: 500, failRate: 0.02, maxTps, stateDir: process.env.STATE_DIR || '' } }); // STATE_DIR=… to include the DLR journal
 setTimeout(() => load.send({ type: 'start', cfg: { host: '127.0.0.1', port, systemId: 'bench', password: 'bench', bindMode: 'trx' },
   test: { sessions: sess, window: win, tps, duration: dur, ramp: 2, dlr: true, dlrWait: 5, respTimeout: 5,
           src: 'BENCH', srcTon: 5, srcNpi: 0, dst: '4477009XXXXX', dstTon: 1, dstNpi: 1, text: process.env.TEXT || 'Benchmark message 123', encoding: 'auto', e2e: true } }), 500);

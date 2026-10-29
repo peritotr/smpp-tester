@@ -66,6 +66,7 @@ When the run ends, you don't get a wall of numbers. You get a report that says, 
 **Built-in vendor (mock SMSC)**
 - Your platform binds to it as a supplier; it accepts messages and returns DLRs
 - Configurable DLR delay and failure rate, TPS limit (returns throttling errors), response delay, processing capacity (simulates a slow operator with a growing queue), MO messages
+- **DLR redelivery**, like a real SMSC: a DLR that cannot be delivered (no RX/TRX bind for that system_id, the connection dropped before the deliver_sm_resp, an error status or no answer within 30 s) is kept per system_id and sent again when it binds, oldest first, at a set rate (500/s by default) and within the window; new DLRs follow in order. It is removed only when a deliver_sm_resp with status 0 comes back; errors are retried after 1, 2, 4 … 60 s. A redelivered DLR is byte-for-byte the first one (same id in the text and in `receipted_message_id`, same stat, err and dates). Pending DLRs survive a vendor restart (journal in the data folder) and are kept for 72 hours by default. The vendor panel shows pending (per system_id), redelivered, retried, expired and dropped; *DLR redelivery* can be switched off
 - **message_ids never repeat**, also across restarts (`<start-time prefix>-<counter>`, about 20 characters); the DLR carries the same id in its text and in `receipted_message_id`. Reusing ids every N messages is available as an opt-in test scenario
 - **End-to-end tracking**: messages carry a marker; the vendor reports how many arrived, how many were lost or duplicated, and the end-to-end latency through your platform
 - **Vendor messages**: the last 1,000 messages that reached the vendor, decoded: account, sender, recipient, `data_coding` with the alphabet it means (GSM7, UCS2, Latin-1 …), concatenated part (UDH) and text, with the raw bytes in hex. Search by number or text, export to CSV. Answers "did my message arrive, with which text and in which encoding?"
@@ -131,7 +132,7 @@ Without Docker: `npm install --omit=dev && UI_PASSWORD=... node server.js`.
 | `UI_PASSWORD` | — | Required, at least 8 characters |
 | `PORT` | `8080` | Web UI port |
 | `HOST` | `0.0.0.0` (`127.0.0.1` in `.env.example`) | Address the web UI listens on |
-| `DATA_DIR` | `./data` (`/data` in Docker) | Profiles, reports, vendor settings, secret key |
+| `DATA_DIR` | `./data` (`/data` in Docker) | Profiles, reports, vendor settings, secret key, pending DLRs (`dlr-queue-<port>.log`) |
 | `PUBLIC_IP` | — | IP shown as the vendor address in the UI |
 
 ## Testing your platform: a quick recipe
@@ -218,6 +219,7 @@ flowchart LR
 | `smpp-core.js` | Interactive SMPP client and encoding helpers |
 | `load-engine.js`, `load-worker.js` | Load engine (own process): sessions, windowing, token-bucket rate control, histograms |
 | `mock-smsc.js`, `mock-worker.js` | Mock vendor on raw sockets (own process) |
+| `dlr-journal.js` | Keeps undelivered DLRs on disk so they survive a vendor restart |
 | `sms-decode.js` | Decodes incoming messages for the vendor messages list (data_coding, GSM 03.38, UCS2, UDH) |
 | `reports.js`, `ui/analysis.js` | Report archive and performance analysis |
 | `main.js`, `preload.js` | Desktop app (Electron) |

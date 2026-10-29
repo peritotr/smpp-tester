@@ -107,7 +107,8 @@ ipcMain.handle('report:pdf', async (e, name) => {
 ipcMain.handle('load:stop', () => { if (loadProc) loadProc.postMessage({ type: 'stop' }); return { ok: true }; });
 ipcMain.handle('load:kill', () => { if (loadProc) loadProc.kill(); return { ok: true }; });
 
-ipcMain.handle('mock:start', (_, o) => startMock(o));
+// Pending DLRs are kept in userData so they survive an app restart
+ipcMain.handle('mock:start', (_, o) => startMock({ ...(o || {}), stateDir: app.getPath('userData') }));
 ipcMain.handle('mock:stop', () => { if (mockProc) { mockProc.kill(); mockProc = null; send('mock:log', { key: 'Vendor stopped', text: 'Vendor stopped' }); } return { ok: true }; });
 ipcMain.handle('mock:reset', () => { if (mockProc) mockProc.postMessage({ type: 'reset' }); return true; });
 // Messages that reached the vendor, decoded (newest first)

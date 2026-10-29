@@ -34,6 +34,15 @@
     'Reuse message_id every': 'message_id tekrarı (her N)', 'message_id reused every {n}': 'message_id her {n} mesajda tekrar',
     'Test scenario: the vendor hands out the same short message_ids again every N messages, to see how your platform copes with reused ids. 0 = off: every id is unique, also across restarts.':
       "Test senaryosu: vendor her N mesajda aynı kısa message_id'leri yeniden verir; platformunun tekrar eden id'lerle nasıl başa çıktığını görmek için. 0 = kapalı: her id benzersizdir, yeniden başlatmalarda da.",
+    'DLR redelivery': 'DLR yeniden gönderimi', 'Redelivery rate (DLR/s)': 'Yeniden gönderim hızı (DLR/sn)', 'Keep pending DLRs (hours)': 'Bekleyen DLR saklama (saat)',
+    'DLRs that cannot be delivered (no receiver bind, connection dropped, error or no deliver_sm_resp) are kept per system_id, survive a vendor restart and are sent again when that system_id binds. Off = they are dropped.':
+      "Gönderilemeyen DLR'lar (alıcı bind yok, bağlantı koptu, hata ya da deliver_sm_resp gelmedi) system_id başına saklanır, vendor yeniden başlasa da kaybolmaz ve o system_id yeniden bind olunca gönderilir. Kapalı = atılır.",
+    'Rate at which pending DLRs are sent after the client binds again': "Müşteri yeniden bind olunca bekleyen DLR'ların gönderilme hızı",
+    'Pending DLRs older than this are dropped and counted as expired': 'Bundan eski bekleyen DLR atılır ve süresi dolmuş olarak sayılır',
+    'Pending DLRs per system_id': 'system_id başına bekleyen DLR',
+    'DLR redelivered {r} · retried {t} · expired {e} · dropped {d}': 'DLR yeniden gönderilen {r} · tekrar denenen {t} · süresi dolan {e} · atılan {d}',
+    'Started delivering {n} pending DLRs to {sid}': '{sid} için {n} bekleyen DLR gönderilmeye başlandı',
+    'Restored {n} pending DLRs from the last run ({exp} expired)': 'Önceki çalışmadan {n} bekleyen DLR geri yüklendi ({exp} tanesinin süresi dolmuştu)',
     // ---- Vendor messages ----
     'Vendor messages': "Vendor'a gelenler", 'Account': 'Hesap', 'Auto refresh': 'Otomatik yenile', 'Message ID': 'Mesaj ID', 'Part': 'Parça',
     'Search number, account, message ID or text': 'Numara, hesap, mesaj ID veya metin ara',
