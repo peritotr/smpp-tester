@@ -3,6 +3,8 @@
 const net = require('net');
 const EventEmitter = require('events');
 const { Hist } = require('./hist');
+const { decodeSm } = require('./sms-decode');
+const KEEP = 1000; // incoming messages kept for the "Vendor messages" list
 const TAG = /#T(\d{13})(\d{7})/;
 const fill = (s, p) => p ? s.replace(/\{(\w+)\}/g, (m, k) => p[k] !== undefined ? p[k] : m) : s;
 const msg = (key, p) => ({ key, p, text: fill(key, p) });
@@ -36,8 +38,11 @@ class MockSmsc extends EventEmitter {
     this.server = null; this.conns = new Set(); this.idc = 0x100000;
     this.stats = { rx: 0, throttled: 0, dlrSent: 0, binds: 0 };
     this.dlrQueue = []; this.seq = 1;
-    this.resetE2e();
+    this.resetE2e(); this.clearMsgs();
   }
+
+  // Last KEEP submit_sm kept raw (cheap at high TPS); decoded only when the list is asked for
+  clearMsgs() { this.msgs = new Array(KEEP); this.msgHead = 0; this.msgTotal = 0; this.encCount = {}; }
 
   resetE2e() { this.e2e = { n: 0, dup: 0, hist: new Hist(), sec: new Hist(), seen: new Set() }; }
 
@@ -70,7 +75,7 @@ class MockSmsc extends EventEmitter {
     if (this.o.capacity) this.capTimer = setInterval(() => this._flushResp(), 2);
     this.statTimer = setInterval(() => {
       const e = this.e2e;
-      this.emit('stats', { ...this.stats, conns: [...this.conns].filter(c => c.bound).length, dlrPending: this.dlrQueue.length - (this.dlrHead || 0), respQueue: (this.respQ || []).length - (this.respHead || 0),
+      this.emit('stats', { ...this.stats, msgTotal: this.msgTotal, conns: [...this.conns].filter(c => c.bound).length, dlrPending: this.dlrQueue.length - (this.dlrHead || 0), respQueue: (this.respQ || []).length - (this.respHead || 0),
         e2e: { n: e.n, dup: e.dup, sec: e.sec.summary(), total: e.hist.summary() } });
       e.sec = new Hist();
       this.stats.rx = 0; this.stats.throttled = 0; this.stats.dlrSent = 0;
@@ -111,7 +116,7 @@ class MockSmsc extends EventEmitter {
         if (this.o.maxBinds && [...this.conns].filter(x => x.bound).length >= this.o.maxBinds) return;
         const ok = !this.o.systemId || (sid === this.o.systemId && pw === this.o.password);
         this._write(c, respWithCstr(cmd, ok ? ST.OK : ST.RBINDFAIL, seq, 'MOCKSMSC'));
-        if (ok) { c.bound = true; c.rx = cmd !== CMD.bind_transmitter; this.stats.binds++; }
+        if (ok) { c.bound = true; c.rx = cmd !== CMD.bind_transmitter; c.sid = sid; this.stats.binds++; }
         else setTimeout(() => c.sock.end(), 50);
         return;
       }
@@ -148,21 +153,45 @@ class MockSmsc extends EventEmitter {
     [s, p] = cstr(body, p); const src = s;
     const dstTon = body[p], dstNpi = body[p + 1]; p += 2;
     [s, p] = cstr(body, p); const dst = s;
-    p += 3;                                 // esm, protocol, priority
+    const esm = body[p]; p += 3;            // esm, protocol, priority
     [, p] = cstr(body, p); [, p] = cstr(body, p); // schedule, validity
     const reg = body[p] & 0x03;
-    this._e2e(body, p, now);
+    const { dcs, sm } = this._sm(body, p);
+    this._e2e(dcs, sm, now);
+    // Keep a copy for the "Vendor messages" list: what arrived, from which account, in which encoding
+    this.msgs[this.msgHead] = { t: now, sid: c.sid || '', src, srcTon, dst, dstTon, esm, dcs, reg, id, sm: Buffer.from(sm) };
+    this.msgHead = (this.msgHead + 1) % KEEP; this.msgTotal++;
+    this.encCount[dcs] = (this.encCount[dcs] || 0) + 1;
     if (reg && c.rx) this.dlrQueue.push({ due: now + this.o.dlrDelay, c, id, src, srcTon, srcNpi, dst, dstTon, dstNpi });
   }
 
-  // Pick up the #T<13-digit epoch ms><7-digit counter> marker added by the client → end-to-end latency, duplicates
-  _e2e(body, p, now) {
+  // data_coding and the message bytes (short_message, or the message_payload TLV when short_message is empty)
+  _sm(body, p) {
     let q = p + 1;                         // replace_if_present
     q++; const dcs = body[q++]; q++;       // data_coding, sm_default_msg_id
     const len = body[q++]; let sm = body.subarray(q, q + len); q += len;
-    if (!len) {                            // message_payload TLV
+    if (!len) {
       while (q + 4 <= body.length) { const tag = body.readUInt16BE(q), l = body.readUInt16BE(q + 2); if (tag === 0x0424) { sm = body.subarray(q + 4, q + 4 + l); break; } q += 4 + l; }
     }
+    return { dcs: dcs || 0, sm };
+  }
+
+  // Newest first, decoded, filtered by q (number, account, message id or text; case-insensitive)
+  listMsgs(q = '', limit = 500) {
+    const out = [], needle = String(q || '').trim().toLowerCase();
+    for (let k = 1; k <= KEEP && out.length < limit; k++) {
+      const m = this.msgs[(this.msgHead - k + KEEP) % KEEP]; if (!m) break;
+      const d = decodeSm(m.dcs, m.esm, m.sm);
+      const row = { t: m.t, sid: m.sid, src: m.src, srcTon: m.srcTon, dst: m.dst, dstTon: m.dstTon, dcs: m.dcs, enc: d.enc, encLabel: d.encLabel,
+        parts: d.parts, text: d.text, bytes: d.bytes, hex: d.hex, udh: !!d.udh, reg: m.reg, id: m.id };
+      if (needle && ![row.src, row.dst, row.sid, row.id, row.text].some(v => String(v).toLowerCase().includes(needle))) continue;
+      out.push(row);
+    }
+    return { list: out, total: this.msgTotal, kept: Math.min(this.msgTotal, KEEP), enc: { ...this.encCount } };
+  }
+
+  // Pick up the #T<13-digit epoch ms><7-digit counter> marker added by the client → end-to-end latency, duplicates
+  _e2e(dcs, sm, now) {
     if (!sm.length) return;
     let txt;
     if ((dcs & 0x0f) === 8) { const le = Buffer.allocUnsafe(sm.length & ~1); for (let i = 0; i + 1 < sm.length; i += 2) { le[i] = sm[i + 1]; le[i + 1] = sm[i]; } txt = le.toString('utf16le'); }

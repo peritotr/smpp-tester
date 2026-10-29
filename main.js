@@ -48,7 +48,7 @@ function getLoad() {
   return loadProc;
 }
 
-let mockProc = null, moWaiters = [];
+let mockProc = null, moWaiters = [], msgWaiters = new Map(), msgRid = 0;
 function startMock(opts) {
   return new Promise(resolve => {
     if (mockProc) mockProc.kill();
@@ -58,6 +58,7 @@ function startMock(opts) {
       else if (m.type === 'started') { p.started = true; mockOpts = { ...opts, password: undefined }; resolve({ ok: true }); }
       else if (m.type === 'error') { send('mock:log', 'Error: ' + m.text); if (!p.started) { p.kill(); if (mockProc === p) mockProc = null; } resolve({ ok: false, error: m.msg || m.text }); }
       else if (m.type === 'mo') { const w = moWaiters.shift(); w && w(m.n); }
+      else if (m.type === 'msgs') { const w = msgWaiters.get(m.rid); if (w) { msgWaiters.delete(m.rid); w(m.data); } }
     });
     p.on('exit', () => { if (mockProc === p) mockProc = null; });
     p.on('spawn', () => p.postMessage({ type: 'start', opts }));
@@ -109,6 +110,13 @@ ipcMain.handle('load:kill', () => { if (loadProc) loadProc.kill(); return { ok: 
 ipcMain.handle('mock:start', (_, o) => startMock(o));
 ipcMain.handle('mock:stop', () => { if (mockProc) { mockProc.kill(); mockProc = null; send('mock:log', { key: 'Vendor stopped', text: 'Vendor stopped' }); } return { ok: true }; });
 ipcMain.handle('mock:reset', () => { if (mockProc) mockProc.postMessage({ type: 'reset' }); return true; });
+// Messages that reached the vendor, decoded (newest first)
+ipcMain.handle('mock:msgs', (_, q) => new Promise(resolve => {
+  if (!mockProc) return resolve(null);
+  const rid = ++msgRid; msgWaiters.set(rid, resolve); mockProc.postMessage({ type: 'msgs', rid, q });
+  setTimeout(() => { if (msgWaiters.delete(rid)) resolve(null); }, 3000);
+}));
+ipcMain.handle('mock:msgsClear', () => { if (mockProc) mockProc.postMessage({ type: 'msgsClear' }); return true; });
 ipcMain.handle('sys:ips', () => Object.entries(os.networkInterfaces()).flatMap(([name, list]) =>
   (list || []).filter(i => i.family === 'IPv4' && !i.internal).map(i => ({ name, address: i.address }))));
 ipcMain.handle('mock:mo', (_, text, from, to) => new Promise(resolve => {

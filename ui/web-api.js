@@ -63,6 +63,8 @@
     mockStart: o => invoke('mock:start', o),
     mockStop: () => invoke('mock:stop'),
     mockReset: () => invoke('mock:reset'),
+    mockMsgs: q => invoke('mock:msgs', q),
+    mockMsgsClear: () => invoke('mock:msgsClear'),
     ips: () => invoke('sys:ips'),
     mockMo: (t, f, to) => invoke('mock:mo', t, f, to),
     loadProfiles: () => invoke('profiles:load'),

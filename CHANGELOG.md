@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0
+
+- **Vendor messages**: a new tab lists the last 1,000 messages that reached the built-in vendor, decoded: account (system_id), sender, recipient, data_coding with its alphabet (GSM7, UCS2, Latin-1, IA5, binary; GSM 03.38 coding groups such as 0x10 / 0xF0 too), concatenated part from the UDH, text with control characters shown, and the raw short_message in hex. Search, auto refresh, CSV export, clear
+- The vendor keeps the raw bytes and decodes only when the list is opened, so throughput at 10,000 TPS is unchanged
+
 ## 1.4.0 — first public release
 
 - Interface in English and Turkish, with a language switch

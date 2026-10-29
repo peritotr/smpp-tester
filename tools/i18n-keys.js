@@ -8,7 +8,7 @@ const add = (s, html) => { if (html) s = s.replace(/\s+/g, ' ').trim(); if (s &&
 const unq = s => s.replace(/\\'/g, "'").replace(/\\"/g, '"');
 
 // JS: t('…'), I18N.t('…'), msg('…'), err('…'), key: '…', label: '…' (single-quoted literals only)
-const jsFiles = ['ui/renderer.js', 'ui/load.js', 'ui/reports-ui.js', 'ui/report.js', 'ui/analysis.js', 'ui/web-api.js',
+const jsFiles = ['ui/renderer.js', 'ui/load.js', 'ui/reports-ui.js', 'ui/vendor-msgs.js', 'ui/report.js', 'ui/analysis.js', 'ui/web-api.js',
   'load-engine.js', 'mock-smsc.js', 'smpp-core.js', 'server.js', 'main.js'];
 const jsRe = [/\b(?:t|I18N\.t|msg|err|setPhase)\(\s*'((?:[^'\\]|\\.)*)'/g, /\b(?:t|I18N\.t)\(\s*\"((?:[^\"\\]|\\.)*)\"/g, /\b_event\(\s*'\w+',\s*'((?:[^'\\]|\\.)*)'/g, /\b(?:key|infoKey|label):\s*'((?:[^'\\]|\\.)*)'/g, /[{,]\s*error:\s*'((?:[^'\\]|\\.)*)'/g];
 for (const f of jsFiles) {

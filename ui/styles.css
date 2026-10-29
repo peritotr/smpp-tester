@@ -145,3 +145,12 @@ body.nomac .drag{display:none} body.nomac .side{padding-top:16px} body.nomac .mo
 .brand #stateText{order:5;flex-basis:100%;padding-left:17px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .brand .logout{white-space:nowrap}
 select.lang{min-width:52px}
+
+/* Vendor messages */
+.vmsum{padding:8px 16px 0;margin:0}
+.vmlist tbody tr{cursor:pointer}
+.vmlist td.vtext{white-space:pre-wrap;word-break:break-word;min-width:260px;max-width:520px;font-family:inherit;font-size:12.5px}
+.vmlist tr.vdet td{background:var(--panel);white-space:normal;cursor:default}
+.vmlist tr.vdet code{word-break:break-all;font-size:11px}
+.enc{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;font-weight:600;font-family:inherit;background:var(--line);color:var(--muted)}
+.enc.GSM7{background:#3d8bfd22;color:var(--accent)} .enc.UCS2{background:#2fbf7122;color:var(--ok)} .enc.LATIN1,.enc.IA5{background:#e5a83b22;color:var(--warn)} .enc.BINARY,.enc.OTHER{background:#ef5a5a22;color:var(--err)}

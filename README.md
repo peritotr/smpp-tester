@@ -67,6 +67,7 @@ When the run ends, you don't get a wall of numbers. You get a report that says, 
 - Your platform binds to it as a supplier; it accepts messages and returns DLRs
 - Configurable DLR delay and failure rate, TPS limit (returns throttling errors), response delay, processing capacity (simulates a slow operator with a growing queue), MO messages
 - **End-to-end tracking**: messages carry a marker; the vendor reports how many arrived, how many were lost or duplicated, and the end-to-end latency through your platform
+- **Vendor messages**: the last 1,000 messages that reached the vendor, decoded: account, sender, recipient, `data_coding` with the alphabet it means (GSM7, UCS2, Latin-1 …), concatenated part (UDH) and text, with the raw bytes in hex. Search by number or text, export to CSV. Answers "did my message arrive, with which text and in which encoding?"
 
 **Performance reports**
 - Saved automatically after every load test; printable to PDF, exportable to CSV/JSON
@@ -216,6 +217,7 @@ flowchart LR
 | `smpp-core.js` | Interactive SMPP client and encoding helpers |
 | `load-engine.js`, `load-worker.js` | Load engine (own process): sessions, windowing, token-bucket rate control, histograms |
 | `mock-smsc.js`, `mock-worker.js` | Mock vendor on raw sockets (own process) |
+| `sms-decode.js` | Decodes incoming messages for the vendor messages list (data_coding, GSM 03.38, UCS2, UDH) |
 | `reports.js`, `ui/analysis.js` | Report archive and performance analysis |
 | `main.js`, `preload.js` | Desktop app (Electron) |
 | `server.js`, `ui/web-api.js` | Web server edition (HTTP + WebSocket, password login) |

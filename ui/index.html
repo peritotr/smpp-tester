@@ -74,6 +74,7 @@
     <button data-mode="single" class="on" data-i18n>Single test</button>
     <button data-mode="load" data-i18n>Load test</button>
     <button data-mode="reports"><span data-i18n>Reports</span> <span id="cReports" class="cnt">0</span></button>
+    <button data-mode="vmsgs"><span data-i18n>Vendor messages</span> <span id="cVmsgs" class="cnt">0</span></button>
   </div>
   <div class="view on" id="view-single">
   <section class="compose">
@@ -205,6 +206,23 @@
     </div>
   </div>
 
+  <div class="view" id="view-vmsgs">
+    <div class="rbar">
+      <input id="vmQ" type="search" placeholder="Search number, account, message ID or text" data-i18n-attr="placeholder" spellcheck="false" style="max-width:340px">
+      <label class="check small"><input id="vmAuto" type="checkbox" checked> <span data-i18n>Auto refresh</span></label>
+      <span class="spacer"></span>
+      <button id="vmRefresh" class="ghost small" data-i18n>Refresh</button>
+      <button id="vmCsv" class="ghost small" data-i18n>Export CSV</button>
+      <button id="vmClear" class="ghost small" data-i18n>Clear</button>
+    </div>
+    <p id="vmSum" class="muted small vmsum"></p>
+    <div class="rlist vmlist">
+      <table>
+        <thead><tr><th data-i18n>Time</th><th data-i18n>Account</th><th data-i18n>Sender</th><th data-i18n>Recipient</th><th title="data_coding of the submit_sm, with the alphabet it means" data-i18n-attr="title" data-i18n>Encoding</th><th data-i18n>Part</th><th data-i18n>Text</th><th data-i18n>Message ID</th></tr></thead>
+        <tbody id="vmBody"></tbody>
+      </table>
+    </div>
+  </div>
   <div class="view" id="view-reports">
     <div class="rbar">
       <span class="muted small" data-i18n>A report is saved automatically when each load test finishes. Click a row to open it.</span>
@@ -224,5 +242,6 @@
 <script src="renderer.js"></script>
 <script src="load.js"></script>
 <script src="reports-ui.js"></script>
+<script src="vendor-msgs.js"></script>
 </body>
 </html>

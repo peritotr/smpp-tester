@@ -31,6 +31,17 @@
     'Bind rejected: {status}': 'Bind reddedildi: {status}', 'Host is empty': 'Host boş', 'Not bound': 'Bağlı değil', 'Socket write error': 'Soket yazma hatası',
     // ---- Vendor ----
     'Vendor (built-in SMSC)': 'Vendor (dahili SMSC)',
+    // ---- Vendor messages ----
+    'Vendor messages': "Vendor'a gelenler", 'Account': 'Hesap', 'Auto refresh': 'Otomatik yenile', 'Message ID': 'Mesaj ID', 'Part': 'Parça',
+    'Search number, account, message ID or text': 'Numara, hesap, mesaj ID veya metin ara',
+    'data_coding of the submit_sm, with the alphabet it means': "submit_sm'deki data_coding ve karşılık geldiği alfabe",
+    '(binary, see hex)': '(binary, hex\'e bak)', 'No message matches.': 'Eşleşen mesaj yok.',
+    'No messages yet. Point your platform at the vendor and send one.': "Henüz mesaj yok. Platformunu vendor'a yönlendirip bir mesaj gönder.",
+    'Raw short_message (hex)': 'Ham short_message (hex)',
+    'Received since the vendor started: {n} · last {kept} kept here': 'Vendor başladığından beri gelen: {n} · son {kept} tanesi burada',
+    'Sender TON {s} · recipient TON {d} · data_coding {dcs} · {b} bytes{udh} · DLR requested: {reg}': 'Gönderen TON {s} · alıcı TON {d} · data_coding {dcs} · {b} bayt{udh} · DLR istendi: {reg}',
+    'The vendor is not running. Start it on the left; messages your platform sends to it appear here.': "Vendor çalışmıyor. Soldan başlat; platformunun ona gönderdiği mesajlar burada görünür.",
+    'by encoding: {list}': 'kodlamaya göre: {list}', 'no': 'hayır', 'yes': 'evet', '{n} match': '{n} eşleşme',
     'A mock vendor/supplier your platform connects to. Accepts messages and generates DLRs. Also useful for trying the tool without an external server.':
       'Platformunun bağlanacağı sahte vendor/supplier. Gelen mesajları kabul eder, DLR üretir. Dış sunucu olmadan denemek için de kullanılabilir.',
     'Listen on': 'Dinleme', 'This machine only (127.0.0.1)': 'Sadece bu makine (127.0.0.1)', 'Network (0.0.0.0)': 'Ağdan erişilebilir (0.0.0.0)',

@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('api', {
   mockStart: o => ipcRenderer.invoke('mock:start', o),
   mockStop: () => ipcRenderer.invoke('mock:stop'),
   mockReset: () => ipcRenderer.invoke('mock:reset'),
+  mockMsgs: q => ipcRenderer.invoke('mock:msgs', q),
+  mockMsgsClear: () => ipcRenderer.invoke('mock:msgsClear'),
   ips: () => ipcRenderer.invoke('sys:ips'),
   mockMo: (t, f, to) => ipcRenderer.invoke('mock:mo', t, f, to),
   loadProfiles: () => ipcRenderer.invoke('profiles:load'),

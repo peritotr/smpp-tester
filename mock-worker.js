@@ -7,6 +7,8 @@ const send = require('./ipc-child')(m => {
     else if (m.type === 'stop') { mock.stop(); send({ type: 'stopped' }); }
     else if (m.type === 'reset') mock.resetE2e();
     else if (m.type === 'mo') send({ type: 'mo', n: mock.sendMo(m.text, m.from, m.to) });
+    else if (m.type === 'msgs') send({ type: 'msgs', rid: m.rid, data: mock.listMsgs(m.q, m.limit) });
+    else if (m.type === 'msgsClear') mock.clearMsgs();
   } catch (e) { send({ type: 'error', text: e.message }); }
 });
 // Messages are { key, p, text } objects so the UI can translate them

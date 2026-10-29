@@ -132,7 +132,7 @@ function getLoad() {
 }
 
 // Vendor process
-let mockProc = null, moWaiters = [], mockE2e = null;
+let mockProc = null, moWaiters = [], mockE2e = null, msgWaiters = new Map(), msgRid = 0;
 function startMock(opts) {
   return new Promise(resolve => {
     if (mockProc) mockProc.kill();
@@ -143,6 +143,7 @@ function startMock(opts) {
       else if (m.type === 'started') { p.started = true; state.mock = { on: true, opts: { ...opts, password: undefined } }; saveVendor(opts); broadcast('app:sync', publicState()); resolve({ ok: true }); }
       else if (m.type === 'error') { broadcast('mock:log', 'Error: ' + m.text); if (!p.started) { p.kill(); if (mockProc === p) mockProc = null; } resolve({ ok: false, error: m.msg || m.text }); }
       else if (m.type === 'mo') { const w = moWaiters.shift(); w && w(m.n); }
+      else if (m.type === 'msgs') { const w = msgWaiters.get(m.rid); if (w) { msgWaiters.delete(m.rid); w(m.data); } }
     });
     p.on('exit', () => { if (mockProc === p) { mockProc = null; if (state.mock.on) { state.mock = { on: false, opts: null }; broadcast('app:sync', publicState()); } } });
     p.send({ type: 'start', opts });
@@ -212,6 +213,13 @@ const handlers = {
     return { ok: true };
   },
   'mock:reset': () => { if (mockProc) mockProc.send({ type: 'reset' }); return true; },
+  // Messages that reached the vendor, decoded (newest first)
+  'mock:msgs': q => new Promise(resolve => {
+    if (!mockProc) return resolve(null);
+    const rid = ++msgRid; msgWaiters.set(rid, resolve); mockProc.send({ type: 'msgs', rid, q: typeof q === 'string' ? q.slice(0, 200) : '' });
+    setTimeout(() => { if (msgWaiters.delete(rid)) resolve(null); }, 3000);
+  }),
+  'mock:msgsClear': () => { if (mockProc) mockProc.send({ type: 'msgsClear' }); return true; },
   'mock:mo': (text, from, to) => new Promise(resolve => {
     if (!mockProc) return resolve(0);
     moWaiters.push(resolve); mockProc.send({ type: 'mo', text, from, to });
