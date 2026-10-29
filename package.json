@@ -1,7 +1,7 @@
 {
   "name": "smpp-tester",
   "productName": "SMPP Tester",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "SMPP test client, load tester and mock vendor (SMSC) with performance reports — desktop app and Docker web server",
   "keywords": [
     "smpp",

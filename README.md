@@ -66,6 +66,7 @@ When the run ends, you don't get a wall of numbers. You get a report that says, 
 **Built-in vendor (mock SMSC)**
 - Your platform binds to it as a supplier; it accepts messages and returns DLRs
 - Configurable DLR delay and failure rate, TPS limit (returns throttling errors), response delay, processing capacity (simulates a slow operator with a growing queue), MO messages
+- **message_ids never repeat**, also across restarts (`<start-time prefix>-<counter>`, about 20 characters); the DLR carries the same id in its text and in `receipted_message_id`. Reusing ids every N messages is available as an opt-in test scenario
 - **End-to-end tracking**: messages carry a marker; the vendor reports how many arrived, how many were lost or duplicated, and the end-to-end latency through your platform
 - **Vendor messages**: the last 1,000 messages that reached the vendor, decoded: account, sender, recipient, `data_coding` with the alphabet it means (GSM7, UCS2, Latin-1 …), concatenated part (UDH) and text, with the raw bytes in hex. Search by number or text, export to CSV. Answers "did my message arrive, with which text and in which encoding?"
 

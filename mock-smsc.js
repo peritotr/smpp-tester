@@ -4,6 +4,7 @@ const net = require('net');
 const EventEmitter = require('events');
 const { Hist } = require('./hist');
 const { decodeSm } = require('./sms-decode');
+const crypto = require('crypto');
 const KEEP = 1000; // incoming messages kept for the "Vendor messages" list
 const TAG = /#T(\d{13})(\d{7})/;
 const fill = (s, p) => p ? s.replace(/\{(\w+)\}/g, (m, k) => p[k] !== undefined ? p[k] : m) : s;
@@ -32,13 +33,29 @@ function respWithCstr(cmd, status, seq, s) {
 }
 function emptyResp(cmd, status, seq) { return header(cmd | RESP, status, seq, 0); }
 
+// message_id: <start-time prefix>-<counter>, unique across restarts and across vendor processes.
+// The prefix is the start time in ms (hex) plus 16 random bits, and it is renewed on every start, so a restart can
+// never hand out an id the gateway has already seen. The counter never wraps (up to 2^53). About 20 characters,
+// well inside SMPP 3.4's 65-byte message_id. The dash keeps gateways from treating the id as a hex or decimal number.
+let lastPrefixMs = 0;
+function idPrefix() {
+  const ms = Math.max(Date.now(), lastPrefixMs + 1); lastPrefixMs = ms;
+  return ms.toString(16).toUpperCase() + crypto.randomBytes(2).toString('hex').toUpperCase();
+}
+
 class MockSmsc extends EventEmitter {
   constructor() {
     super();
-    this.server = null; this.conns = new Set(); this.idc = 0x100000;
+    this.server = null; this.conns = new Set(); this.idc = 0; this.idPrefix = idPrefix();
     this.stats = { rx: 0, throttled: 0, dlrSent: 0, binds: 0 };
     this.dlrQueue = []; this.seq = 1;
     this.resetE2e(); this.clearMsgs();
+  }
+
+  nextId() {
+    const n = this.idc++;
+    if (this.o && this.o.idReuse) return (0x100000 + n % this.o.idReuse).toString(16).toUpperCase(); // deliberate repeats
+    return this.idPrefix + '-' + n.toString(16).toUpperCase();
   }
 
   // Last KEEP submit_sm kept raw (cheap at high TPS); decoded only when the list is asked for
@@ -57,7 +74,10 @@ class MockSmsc extends EventEmitter {
       capacity: Math.max(0, Number(opts.capacity || 0)),       // 0 = unlimited; above it responses wait in a queue
       maxBinds: Math.max(0, Number(opts.maxBinds || 0)),       // 0 = unlimited; extra binds get no answer
       systemId: opts.systemId || '', password: opts.password || '',
+      // Test scenario only: hand out the same short ids again every N submits (0 = off, the default)
+      idReuse: Math.max(0, Math.floor(Number(opts.idReuse || 0))),
     };
+    this.idPrefix = idPrefix(); this.idc = 0; // fresh, never-seen ids after every (re)start
     this.server = net.createServer(sock => this._onConn(sock));
     this.server.on('error', e => {
       const m = e.code === 'EADDRINUSE' ? msg('Port {port} is already in use', { port: this.o.port })
@@ -138,7 +158,7 @@ class MockSmsc extends EventEmitter {
       if (now - this.secStart >= 1000) { this.secStart = now; this.secCount = 0; }
       if (++this.secCount > this.o.maxTps) { this.stats.throttled++; return this._write(c, respWithCstr(CMD.submit_sm, ST.RTHROTTLED, seq, '')); }
     }
-    const id = (this.idc++).toString(16).toUpperCase();
+    const id = this.nextId();
     const resp = respWithCstr(CMD.submit_sm, ST.OK, seq, id);
     if (this.o.capacity) {
       // Fixed processing rate: above capacity the queue and latency grow, like a real system

@@ -31,6 +31,9 @@
     'Bind rejected: {status}': 'Bind reddedildi: {status}', 'Host is empty': 'Host boş', 'Not bound': 'Bağlı değil', 'Socket write error': 'Soket yazma hatası',
     // ---- Vendor ----
     'Vendor (built-in SMSC)': 'Vendor (dahili SMSC)',
+    'Reuse message_id every': 'message_id tekrarı (her N)', 'message_id reused every {n}': 'message_id her {n} mesajda tekrar',
+    'Test scenario: the vendor hands out the same short message_ids again every N messages, to see how your platform copes with reused ids. 0 = off: every id is unique, also across restarts.':
+      "Test senaryosu: vendor her N mesajda aynı kısa message_id'leri yeniden verir; platformunun tekrar eden id'lerle nasıl başa çıktığını görmek için. 0 = kapalı: her id benzersizdir, yeniden başlatmalarda da.",
     // ---- Vendor messages ----
     'Vendor messages': "Vendor'a gelenler", 'Account': 'Hesap', 'Auto refresh': 'Otomatik yenile', 'Message ID': 'Mesaj ID', 'Part': 'Parça',
     'Search number, account, message ID or text': 'Numara, hesap, mesaj ID veya metin ara',

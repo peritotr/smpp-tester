@@ -116,7 +116,7 @@
       <tr><td>${esc(t('Sender → recipient'))}</td><td>${esc(test.src)} → ${esc(test.dst)}</td></tr>
       <tr><td>${esc(t('Message / encoding'))}</td><td>${esc(test.text)} · ${esc(test.encoding || 'auto')}</td></tr>
       <tr><td>${esc(t('DLR / end-to-end'))}</td><td>${yn(test.dlr)} / ${yn(test.e2e)}</td></tr>
-      ${rep.vendor ? `<tr><td>Vendor</td><td>port ${esc(rep.vendor.opts.port)} · DLR ${esc(rep.vendor.opts.dlrDelay)} ms · ${esc(t('failures'))} ${Math.round((rep.vendor.opts.failRate || 0) * 100)}%${rep.vendor.opts.maxTps ? ' · ' + esc(t('limit')) + ' ' + N(rep.vendor.opts.maxTps) : ''}${rep.vendor.opts.capacity ? ' · ' + esc(t('capacity')) + ' ' + N(rep.vendor.opts.capacity) : ''}</td></tr>` : ''}
+      ${rep.vendor ? `<tr><td>Vendor</td><td>port ${esc(rep.vendor.opts.port)} · DLR ${esc(rep.vendor.opts.dlrDelay)} ms · ${esc(t('failures'))} ${Math.round((rep.vendor.opts.failRate || 0) * 100)}%${rep.vendor.opts.maxTps ? ' · ' + esc(t('limit')) + ' ' + N(rep.vendor.opts.maxTps) : ''}${rep.vendor.opts.capacity ? ' · ' + esc(t('capacity')) + ' ' + N(rep.vendor.opts.capacity) : ''}${rep.vendor.opts.idReuse ? ' · ' + esc(t('message_id reused every {n}', { n: N(rep.vendor.opts.idReuse) })) : ''}</td></tr>` : ''}
     </tbody></table></div>
     <p class="note">${esc(t('Latency onset: p95 exceeding 2× the low-load baseline (at least +20 ms){crit} for 3 consecutive seconds. Saturation: accepted TPS staying below 90% of the target for 3 seconds.', { crit: test.criteria && test.criteria.p95Max ? t(' or the acceptance limit') : '' }))}</p>
   </section>`;

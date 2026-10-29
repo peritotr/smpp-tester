@@ -197,7 +197,7 @@ document.querySelectorAll('.tabs button[data-tab]').forEach(b => b.onclick = () 
 // ---------- Built-in vendor (mock SMSC) ----------
 let mockOn = false, lastMockStats = null;
 window.mockState = { on: false, e2e: null };
-const MOCK_FIELDS = ['mockListen','mockPort','mockDelay','mockSystemId','mockFail','mockMaxTps','mockRespDelay','mockCapacity'];
+const MOCK_FIELDS = ['mockListen','mockPort','mockDelay','mockSystemId','mockFail','mockMaxTps','mockRespDelay','mockCapacity','mockIdReuse'];
 try { const o = JSON.parse(localStorage.getItem('mockForm') || '{}'); for (const k in o) setVal(k, o[k]); } catch {}
 const saveMockForm = () => { const o = {}; MOCK_FIELDS.forEach(f => o[f] = val(f)); try { localStorage.setItem('mockForm', JSON.stringify(o)); } catch {} };
 MOCK_FIELDS.forEach(f => $(f).addEventListener('change', saveMockForm));
@@ -217,6 +217,7 @@ $('mockToggle').onclick = async () => {
     const r = await api.mockStart({
       port: val('mockPort'), bindHost: val('mockListen'), dlrDelay: Number(val('mockDelay')), failRate: Number(val('mockFail')) / 100,
       maxTps: Number(val('mockMaxTps')), respDelay: Number(val('mockRespDelay')), capacity: Number(val('mockCapacity')), systemId: val('mockSystemId').trim(), password: val('mockPassword'),
+      idReuse: Number(val('mockIdReuse')) || 0,
     });
     if (!r.ok) return alert(tm(r.error));
     mockOn = true;
@@ -238,7 +239,7 @@ api.on('app:sync', st => {
     if (st.mock.on && st.mock.opts) {
       const o = st.mock.opts;
       setVal('mockListen', o.bindHost); setVal('mockPort', o.port); setVal('mockDelay', o.dlrDelay); setVal('mockSystemId', o.systemId || '');
-      setVal('mockFail', Math.round((o.failRate || 0) * 100)); setVal('mockMaxTps', o.maxTps || 0); setVal('mockRespDelay', o.respDelay || 0); setVal('mockCapacity', o.capacity || 0);
+      setVal('mockFail', Math.round((o.failRate || 0) * 100)); setVal('mockMaxTps', o.maxTps || 0); setVal('mockRespDelay', o.respDelay || 0); setVal('mockCapacity', o.capacity || 0); setVal('mockIdReuse', o.idReuse || 0);
     }
     if (st.mock.on !== mockOn) setMockUi(st.mock.on);
   }
