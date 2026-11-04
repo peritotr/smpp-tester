@@ -35,6 +35,9 @@ class LoadEngine extends EventEmitter {
       dlrWait: Math.max(0, Number(t.dlrWait ?? 10)) * 1000,
       retryThrottle: t.retryThrottle !== false,
       dlr: !!t.dlr,
+      // Test option: answer every Nth DLR with an error (e.g. 0x14 ESME_RMSGQFUL), like a gateway under pressure
+      dlrRejectEvery: Math.max(0, Math.floor(Number(t.dlrRejectEvery) || 0)),
+      dlrRejectStatus: Number(t.dlrRejectStatus ?? 0x14) >>> 0,
       e2e: !!t.e2e,
       criteria: t.criteria || {},
     };
@@ -261,9 +264,11 @@ class LoadEngine extends EventEmitter {
 
   _onDeliver(st, pdu) {
     // Write deliver_sm_resp as raw bytes (fast path)
-    const r = Buffer.alloc(17); r.writeUInt32BE(17, 0); r.writeUInt32BE(0x80000005, 4); r.writeUInt32BE(pdu.sequence_number, 12);
-    st.out.push(r); if (!st.flushQ) { st.flushQ = true; setImmediate(() => { st.flushQ = false; this._flush(st); }); }
     const isDlr = (pdu.esm_class & 0x3c) === 0x04 || pdu.receipted_message_id;
+    const reject = isDlr && this.t.dlrRejectEvery && (this.dlrSeen = (this.dlrSeen || 0) + 1) % this.t.dlrRejectEvery === 0;
+    const r = Buffer.alloc(17); r.writeUInt32BE(17, 0); r.writeUInt32BE(0x80000005, 4); r.writeUInt32BE(reject ? this.t.dlrRejectStatus : 0, 8); r.writeUInt32BE(pdu.sequence_number, 12);
+    st.out.push(r); if (!st.flushQ) { st.flushQ = true; setImmediate(() => { st.flushQ = false; this._flush(st); }); }
+    if (reject) { this.G.dlrRejected = (this.G.dlrRejected || 0) + 1; return; } // the vendor will send it again
     if (!isDlr) { this.emit('log', msg('MO received from {from}', { from: pdu.source_addr })); return; }
     let id = pdu.receipted_message_id, stat;
     const sm = pdu.short_message && pdu.short_message.message;

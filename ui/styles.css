@@ -155,3 +155,7 @@ select.lang{min-width:52px}
 .enc{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;font-weight:600;font-family:inherit;background:var(--line);color:var(--muted)}
 .enc.GSM7{background:#3d8bfd22;color:var(--accent)} .enc.UCS2{background:#2fbf7122;color:var(--ok)} .enc.LATIN1,.enc.IA5{background:#e5a83b22;color:var(--warn)} .enc.BINARY,.enc.OTHER{background:#ef5a5a22;color:var(--err)}
 #mockStats{white-space:pre-wrap}
+
+.vadv{margin:6px 0 4px}
+.vadv summary{font-size:12px;color:var(--muted);cursor:pointer;margin-bottom:6px}
+.grid2 label.wide{grid-column:1 / -1}

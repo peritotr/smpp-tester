@@ -66,9 +66,10 @@ When the run ends, you don't get a wall of numbers. You get a report that says, 
 **Built-in vendor (mock SMSC)**
 - Your platform binds to it as a supplier; it accepts messages and returns DLRs
 - Configurable DLR delay and failure rate, TPS limit (returns throttling errors), response delay, processing capacity (simulates a slow operator with a growing queue), MO messages
-- **DLR redelivery**, like a real SMSC: a DLR that cannot be delivered (no RX/TRX bind for that system_id, the connection dropped before the deliver_sm_resp, an error status or no answer within 30 s) is kept per system_id and sent again when it binds, oldest first, at a set rate (500/s by default) and within the window; new DLRs follow in order. It is removed only when a deliver_sm_resp with status 0 comes back; errors are retried after 1, 2, 4 … 60 s. A redelivered DLR is byte-for-byte the first one (same id in the text and in `receipted_message_id`, same stat, err and dates). Pending DLRs survive a vendor restart (journal in the data folder) and are kept for 72 hours by default. The vendor panel shows pending (per system_id), redelivered, retried, expired and dropped; *DLR redelivery* can be switched off
+- **DLR redelivery**, like a real SMSC: a DLR that cannot be delivered (no RX/TRX bind for that system_id, the connection dropped before the deliver_sm_resp, an error status or no answer within 30 s) is kept per system_id and sent again when it binds, oldest first, at a set rate (500/s by default) and within the window; new DLRs follow in order. It is removed only when a deliver_sm_resp with status 0 comes back; transient errors (e.g. MSGQFUL, THROTTLED) are retried with exponential back-off and jitter, permanent ones are counted separately (see [Built-in vendor under load](#built-in-vendor-under-load)). A redelivered DLR is byte-for-byte the first one (same id in the text and in `receipted_message_id`, same stat, err and dates). Pending DLRs survive a vendor restart (journal in the data folder) and are kept for 72 hours by default. The vendor panel shows pending (per system_id), redelivered, retried, expired and dropped; *DLR redelivery* can be switched off
 - **message_ids never repeat**, also across restarts (`<start-time prefix>-<counter>`, about 20 characters); the DLR carries the same id in its text and in `receipted_message_id`. Reusing ids every N messages is available as an opt-in test scenario
 - **End-to-end tracking**: messages carry a marker; the vendor reports how many arrived, how many were lost or duplicated, and the end-to-end latency through your platform
+- **Built for gateway load tests**: submit_sm_resp stays fast while DLRs are retried in bulk (8,000 TPS with a third of the DLRs rejected: p99 well under 50 ms), DLR rate limits, DLR delay as a distribution, and a metrics endpoint you can read and reset at the start and end of a test
 - **Vendor messages**: the last 1,000 messages that reached the vendor, decoded: account, sender, recipient, `data_coding` with the alphabet it means (GSM7, UCS2, Latin-1 …), concatenated part (UDH) and text, with the raw bytes in hex. Search by number or text, export to CSV. Answers "did my message arrive, with which text and in which encoding?"
 
 **Performance reports**
@@ -148,6 +149,73 @@ Without Docker: `npm install --omit=dev && UI_PASSWORD=... node server.js`.
 A session can carry roughly `window ÷ response time` messages per second. Size the window per session to at least
 `2 × target TPS × response time (s) ÷ sessions` — for 10,000 TPS at 50 ms with 8 sessions that is about 125. If the *In flight* counter sits at `sessions × window`, the window is full: that means the platform is responding slowly, and a bigger window only makes the queue longer.
 
+## Built-in vendor under load
+
+The vendor is meant to stand in for a real supplier in a gateway's load test, so the gateway's view of it must not be distorted by the vendor's own work.
+
+**The submit path is protected from DLR load.** The vendor runs in its own process on one event loop. Each connection has two output queues: responses (submit_sm_resp, bind and enquire_link responses) are always written first; DLRs are written after them and only while the socket keeps up (at most 256 KB queued). DLR work runs every 10 ms with a budget of 4 ms, on heaps (no scans of the queues), and the DLR journal is written and compacted in a worker thread, so disk I/O never delays a response. (DLRs are not moved to a thread of their own: on a TRX bind submit_sm_resp and deliver_sm share one socket, which belongs to one thread.)
+
+**DLR retries.** A DLR stays queued until a deliver_sm_resp with status 0 comes back.
+- Transient errors (anything not in *permanent error codes*, e.g. `0x14` ESME_RMSGQFUL, `0x58` ESME_RTHROTTLED, `0x08` ESME_RSYSERR) and no response within 30 s are retried after an exponential back-off with jitter: about 1 s, 2 s, 4 s … up to 30 s, each spread over the upper half of its interval so DLRs rejected together do not come back together.
+- Permanent error codes are not retried and are counted as `permanentFailed`.
+- A retried DLR never blocks fresh DLRs, and retries are not held back by the redelivery rate (that rate only paces the backlog after a client reconnects).
+- A DLR is dropped only when it reaches *max attempts* (off by default), its max age (72 h), or the pending limit (5,000,000). Each case is counted with its reason.
+
+**Settings** (vendor panel → *Advanced DLR settings*, or the vendor options in `vendor.json` / the API):
+
+| Option | Default | |
+| --- | --- | --- |
+| `dlrDelay` | `1500` ms | DLR delay after submit (mean for the distributions) |
+| `dlrDelayMode` | `fixed` | `fixed`, `uniform` (± spread), `normal` (σ = spread), `exponential` |
+| `dlrDelaySpread` | `0` ms | Spread for `uniform` / `normal` |
+| `dlrWindow` | `1000` | Unconfirmed deliver_sm per connection |
+| `dlrMaxTps` | `0` (unlimited) | DLRs per second in total |
+| `dlrMaxTpsPerBind` | `0` (unlimited) | DLRs per second on each bind |
+| `dlrRespTimeout` | `30` s | No deliver_sm_resp in this time = transient failure |
+| `dlrRetryMinMs` / `dlrRetryMaxMs` | `1000` / `30000` | Back-off bounds |
+| `dlrMaxAttempts` | `0` (no limit) | Attempts before a DLR is dropped (`dropReasons.maxAttempts`) |
+| `dlrRetentionHours` | `72` | Max age of a pending DLR (then `expired`) |
+| `dlrPermanentErrors` | `0x01,0x02,0x03,0x0A,0x0B,0x0C` | deliver_sm_resp codes that are never retried |
+| `dlrRedelivery` | `true` | Keep and redeliver DLRs at all (off = drop what cannot be sent) |
+| `dlrRedeliveryTps` | `500` | Pace of the backlog after a client binds again |
+| `maxPendingDlr` | `5000000` | Pending DLRs kept in memory (≈ 300 bytes each); beyond it new DLRs are dropped (`dropReasons.overflow`) |
+| `metricsPort` | vendor port + 1000 | HTTP metrics on `metricsHost` (`127.0.0.1`); `0` = off |
+
+**Metrics.** Every 5 seconds the vendor writes one line to stdout (in Docker: `docker compose logs`):
+
+```
+[metrics] submit 8000/s resp p50 0.23 p95 0.78 p99 1.12 ms | dlr sent 8000/s ok 7992/s rejected 0/s | pending 12047 (due later 12047, ready 0, retry 0, in flight 0) | rejected by code 0 | dropped 0 permanent 0 expired 0 | cpu 17.3% heap 27 MB loop p99 11.71 ms
+```
+
+and serves the same as JSON on `http://127.0.0.1:<vendor port + 1000>/metrics` (3775 for the default 2775). Reset the counters at the start of a test and read them at the end:
+
+```bash
+curl -s -X POST http://127.0.0.1:3775/metrics/reset   # returns the counters before the reset, then zeroes them
+curl -s http://127.0.0.1:3775/metrics
+```
+
+| Field | |
+| --- | --- |
+| `submitResp` | submit_sm_resp latency inside the vendor, p50/p95/p99/max ms since the reset (request read → response written to the socket) |
+| `submitted`, `throttled` | submit_sm received, answered with ESME_RTHROTTLED |
+| `rates` | Over the last 5 s: `submitTps`, `dlrSentTps`, `dlrConfirmedTps`, `dlrRejectedTps`, `submitResp` |
+| `dlr.pending` | DLRs not confirmed yet: `notYetDue` (DLR delay running) + `ready` + `retryWaiting` (in back-off) + `inflight` |
+| `dlr.sent`, `confirmed`, `redelivered`, `retried`, `timeouts` | Since the reset |
+| `dlr.rejectedByCode` | deliver_sm_resp errors by code, e.g. `{"0x14": 2600}` |
+| `dlr.permanentFailed`, `dropped` (+ `dropReasons`), `expired` | DLRs given up, by cause |
+| `process` | `cpuPct` (of one core, last 5 s), `heapMB`, `rssMB`, `eventLoopDelayP99Ms` |
+
+`tools/vendor-load-check.js` runs the gateway side (10 binds, window 200) against the vendor and checks submit_sm_resp p99 and that every DLR arrives: `node tools/vendor-load-check.js 8000 600 3` is 8,000 TPS for 10 minutes with every third DLR rejected with MSGQFUL.
+
+Results on a 2 vCPU machine, gateway and vendor on the same host, 10 binds × window 200, DLR delay 1.5 s:
+
+| Run | Submitted | submit_sm_resp p99 (client · vendor) | DLRs delivered | Dropped | Vendor CPU |
+|---|---|---|---|---|---|
+| 8,000 TPS × 10 min | 4,779,270 | 32.5 ms · 1.34 ms | 4,779,270 of 4,779,270 | 0 | 17–22% |
+| Same, every 3rd DLR rejected with MSGQFUL (2,388,078 rejections) | 4,776,158 | 13.8 ms · 0.83 ms | 4,776,158 of 4,776,158 | 0 | ~25% |
+
+The client figure includes the load generator itself, which shares the 2 vCPUs; in a few single seconds its p99 went above 50 ms (worst 79 and 84 ms) while the vendor's own p99 stayed below 2 ms. During the MSGQFUL run about 5,600 DLRs were waiting for a retry at any moment, sent back at ~4,000/s spread by the back-off, on top of 8,000/s fresh ones.
+
 ## How the analysis works
 
 - **Baseline** — median p95 of the first, lightly loaded seconds (the first step in a step test).
@@ -219,14 +287,15 @@ flowchart LR
 | `smpp-core.js` | Interactive SMPP client and encoding helpers |
 | `load-engine.js`, `load-worker.js` | Load engine (own process): sessions, windowing, token-bucket rate control, histograms |
 | `mock-smsc.js`, `mock-worker.js` | Mock vendor on raw sockets (own process) |
-| `dlr-journal.js` | Keeps undelivered DLRs on disk so they survive a vendor restart |
+| `dlr-journal.js`, `dlr-journal-worker.js` | Keeps undelivered DLRs on disk so they survive a vendor restart (file work in a worker thread) |
+| `dlr-sched.js` | DLR scheduling helpers: heap, delay distributions, back-off |
 | `sms-decode.js` | Decodes incoming messages for the vendor messages list (data_coding, GSM 03.38, UCS2, UDH) |
 | `reports.js`, `ui/analysis.js` | Report archive and performance analysis |
 | `main.js`, `preload.js` | Desktop app (Electron) |
 | `server.js`, `ui/web-api.js` | Web server edition (HTTP + WebSocket, password login) |
 | `ui/` | User interface (plain HTML/CSS/JS, no framework), `ui/i18n.js` for translations |
 | `test/` | Test suite (`npm test`) |
-| `tools/` | `bench.js` (CLI benchmark), `report-demo.js`, `i18n-keys.js` |
+| `tools/` | `bench.js` (CLI benchmark), `vendor-load-check.js` (vendor under gateway load), `dlr-redelivery-check.js`, `report-demo.js`, `i18n-keys.js` |
 
 ## Development
 

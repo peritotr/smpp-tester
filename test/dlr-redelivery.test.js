@@ -47,7 +47,7 @@ test('bind drops before the DLRs are due: all of them arrive after the client bi
   const ids = await a.submitN(1500);
   a.destroy();                                  // gateway restarts
   await sleep(800);                             // DLRs fall due with nobody bound
-  assert.equal(v.D.live.size, 1500, 'kept, not dropped');
+  assert.equal(v.D.pending, 1500, 'kept, not dropped');
   const b = await client(port);
   assert.ok(await waitFor(() => b.dlrs.length >= 1500), `got ${b.dlrs.length}`);
   await sleep(300);
@@ -55,7 +55,7 @@ test('bind drops before the DLRs are due: all of them arrive after the client bi
   assert.deepEqual(new Set(b.dlrs.map(d => d.rid)), new Set(ids), 'every message_id exactly once');
   assert.ok(b.dlrs.every(d => idOf(d.txt) === d.rid), 'receipt text id = receipted_message_id');
   assert.ok(logs.some(l => /Started delivering 1500 pending DLRs to gw/.test(l)), 'one summary line on reconnect');
-  assert.equal(v.D.redelivered, 1500); assert.equal(v.D.live.size, 0);
+  assert.equal(v.M.redelivered, 1500); assert.equal(v.D.pending, 0);
   b.destroy();
 });
 
@@ -88,10 +88,10 @@ test('error deliver_sm_resp: retried after a back-off until confirmed', async t 
   const t1 = Date.now(); a.mode = 'ok';
   assert.ok(await waitFor(() => a.dlrs.length >= 2, 5000), 'sent again');
   const gap = Date.now() - t1;
-  assert.ok(gap >= 700, `waited ~1 s before retrying (${gap} ms)`);
+  assert.ok(gap >= 400, `waited before retrying: back-off 0.5–1 s with jitter (${gap} ms)`);
   assert.equal(a.dlrs[1].rid, id); assert.equal(a.dlrs[1].txt, a.dlrs[0].txt);
-  await waitFor(() => v.D.live.size === 0, 2000);
-  assert.equal(v.D.retried, 1); assert.equal(v.D.live.size, 0);
+  await waitFor(() => v.D.pending === 0, 2000);
+  assert.equal(v.M.retried, 1); assert.equal(v.D.pending, 0);
   a.destroy();
 });
 
@@ -126,7 +126,7 @@ test('expired pending DLRs are dropped and counted; redelivery off drops instead
   const a = await client(port, 'gw', { bind: 'tx' });
   await a.submitN(30); a.destroy();
   await sleep(2600);
-  assert.equal(v.D.expired, 30); assert.equal(v.D.live.size, 0);
+  assert.equal(v.M.expired, 30); assert.equal(v.D.pending, 0);
   v.stop();
 
   const port2 = freePort();
@@ -136,7 +136,7 @@ test('expired pending DLRs are dropped and counted; redelivery off drops instead
   const c = await client(port2, 'gw', { bind: 'tx' });
   await c.submitN(30); c.destroy();
   await sleep(600);
-  assert.equal(w.D.dropped, 30);
+  assert.equal(w.M.dropped, 30);
   const d = await client(port2);
   await sleep(500);
   assert.equal(d.dlrs.length, 0);

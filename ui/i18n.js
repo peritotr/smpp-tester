@@ -34,6 +34,18 @@
     'Reuse message_id every': 'message_id tekrarı (her N)', 'message_id reused every {n}': 'message_id her {n} mesajda tekrar',
     'Test scenario: the vendor hands out the same short message_ids again every N messages, to see how your platform copes with reused ids. 0 = off: every id is unique, also across restarts.':
       "Test senaryosu: vendor her N mesajda aynı kısa message_id'leri yeniden verir; platformunun tekrar eden id'lerle nasıl başa çıktığını görmek için. 0 = kapalı: her id benzersizdir, yeniden başlatmalarda da.",
+    'Advanced DLR settings': 'Gelişmiş DLR ayarları', 'DLR delay type': 'DLR gecikme tipi', 'Fixed': 'Sabit', 'Uniform ± spread': 'Düzgün ± sapma', 'Normal (σ = spread)': 'Normal (σ = sapma)', 'Exponential': 'Üstel',
+    'Delay spread (ms)': 'Gecikme sapması (ms)', 'DLR TPS limit': 'DLR TPS sınırı', 'DLR TPS per bind': 'Bind başına DLR TPS', 'DLR window': 'DLR penceresi', 'Max attempts': 'En fazla deneme',
+    'Retry back-off min (ms)': 'Tekrar bekleme en az (ms)', 'Retry back-off max (ms)': 'Tekrar bekleme en çok (ms)', 'Permanent error codes': 'Kalıcı hata kodları', 'Metrics port': 'Metrik portu', 'port + 1000': 'port + 1000',
+    'How the DLR delay after submit is chosen: always the same, or drawn at random around the DLR delay': "Submit'ten sonraki DLR gecikmesinin nasıl seçileceği: hep aynı ya da DLR gecikmesi etrafında rastgele",
+    'Uniform: DLR delay ± this much. Normal: standard deviation. Not used for fixed or exponential.': 'Düzgün: DLR gecikmesi ± bu kadar. Normal: standart sapma. Sabit ve üstelde kullanılmaz.',
+    'DLRs sent per second in total (0 = unlimited)': 'Toplamda saniyede gönderilen DLR (0 = sınırsız)', 'DLRs sent per second on each bind (0 = unlimited)': 'Her bind için saniyede gönderilen DLR (0 = sınırsız)',
+    'deliver_sm sent but not yet confirmed, per connection': 'Bağlantı başına gönderilmiş ama henüz teyit edilmemiş deliver_sm',
+    '0 = no limit; the max age still applies': '0 = sınır yok; en uzun yaş yine geçerli',
+    'First retry after an error waits about this long (with jitter), doubling up to the maximum': 'Hatadan sonraki ilk deneme yaklaşık bu kadar bekler (jitter ile), en çoka kadar ikiye katlanır',
+    'deliver_sm_resp error codes that are never retried; the DLR is counted as a permanent failure. Everything else (e.g. 0x14 MSGQFUL, 0x58 THROTTLED) is retried.': "Hiç tekrar denenmeyen deliver_sm_resp hata kodları; DLR kalıcı hata olarak sayılır. Diğer her şey (ör. 0x14 MSGQFUL, 0x58 THROTTLED) tekrar denenir.",
+    'HTTP: GET /metrics, POST /metrics/reset on 127.0.0.1. Empty = vendor port + 1000; 0 = off.': "HTTP: 127.0.0.1 üzerinde GET /metrics, POST /metrics/reset. Boş = vendor portu + 1000; 0 = kapalı.",
+    'rejected {j} · permanent failures {p}': 'reddedilen {j} · kalıcı hata {p}', 'submit_sm_resp p99 {ms} ms': 'submit_sm_resp p99 {ms} ms',
     'DLR redelivery': 'DLR yeniden gönderimi', 'Redelivery rate (DLR/s)': 'Yeniden gönderim hızı (DLR/sn)', 'Keep pending DLRs (hours)': 'Bekleyen DLR saklama (saat)',
     'DLRs that cannot be delivered (no receiver bind, connection dropped, error or no deliver_sm_resp) are kept per system_id, survive a vendor restart and are sent again when that system_id binds. Off = they are dropped.':
       "Gönderilemeyen DLR'lar (alıcı bind yok, bağlantı koptu, hata ya da deliver_sm_resp gelmedi) system_id başına saklanır, vendor yeniden başlasa da kaybolmaz ve o system_id yeniden bind olunca gönderilir. Kapalı = atılır.",

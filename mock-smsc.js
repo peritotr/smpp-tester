@@ -1,12 +1,21 @@
 // Mock SMSC (vendor) written on raw sockets so it can sustain high TPS.
 // Runs in its own process (mock-worker.js) so it does not skew client-side measurements.
+//
+// One event loop serves both directions, so the submit path is protected from DLR load explicitly:
+//  - responses (submit_sm_resp, bind/enquire_link responses) and DLRs go through separate output queues per
+//    connection; responses are always written first, and DLRs only while the socket is not backed up;
+//  - DLR work runs on a timer with a time budget per tick and O(log n) heaps, never full scans of the queues;
+//  - all journal file work (appending, compaction) runs in a worker thread.
 const net = require('net');
+const http = require('http');
 const EventEmitter = require('events');
+const { performance, monitorEventLoopDelay } = require('perf_hooks');
 const { Hist } = require('./hist');
 const { decodeSm } = require('./sms-decode');
 const crypto = require('crypto');
 const path = require('path');
-const { DlrJournal } = require('./dlr-journal');
+const journal = require('./dlr-journal');
+const { MinHeap, delaySampler, backoff, parseCodes, hex } = require('./dlr-sched');
 const KEEP = 1000; // incoming messages kept for the "Vendor messages" list
 const TAG = /#T(\d{13})(\d{7})/;
 const fill = (s, p) => p ? s.replace(/\{(\w+)\}/g, (m, k) => p[k] !== undefined ? p[k] : m) : s;
@@ -18,6 +27,10 @@ const CMD = {
 };
 const RESP = 0x80000000;
 const ST = { OK: 0, RBINDFAIL: 0x0d, RTHROTTLED: 0x58, RSUBMITFAIL: 0x45, RINVCMDID: 0x03 };
+const TICK_MS = 10, BUDGET_MS = 4;            // DLR work: every 10 ms, at most 4 ms of it
+const DLR_SOCKET_BYTES = 256 * 1024;          // DLRs wait while this much is still queued for a socket
+// deliver_sm_resp errors that mean "never": counted as permanent failures, not retried
+const PERMANENT_DEFAULT = '0x01,0x02,0x03,0x0A,0x0B,0x0C';
 
 function cstr(buf, off) {
   let e = off; while (e < buf.length && buf[e] !== 0) e++;
@@ -34,6 +47,7 @@ function respWithCstr(cmd, status, seq, s) {
   const b = header(cmd | RESP, status, seq, sb.length); sb.copy(b, 16); return b;
 }
 function emptyResp(cmd, status, seq) { return header(cmd | RESP, status, seq, 0); }
+const ymdhm = ts => new Date(ts).toISOString().replace(/[-T:]/g, '').slice(2, 12);
 
 // message_id: <start-time prefix>-<counter>, unique across restarts and across vendor processes.
 // The prefix is the start time in ms (hex) plus 16 random bits, and it is renewed on every start, so a restart can
@@ -45,13 +59,15 @@ function idPrefix() {
   return ms.toString(16).toUpperCase() + crypto.randomBytes(2).toString('hex').toUpperCase();
 }
 
+const num = (v, d) => { const n = Number(v); return v === '' || v == null || !Number.isFinite(n) ? d : n; };
+
 class MockSmsc extends EventEmitter {
   constructor() {
     super();
     this.server = null; this.conns = new Set(); this.idc = 0; this.idPrefix = idPrefix();
     this.stats = { rx: 0, throttled: 0, dlrSent: 0, binds: 0 };
-    this.seq = 1; this.o = { dlrRedelivery: false }; this._dlrInit();
-    this.resetE2e(); this.clearMsgs();
+    this.seq = 1; this.o = { dlrRedelivery: false, dlrDelaySample: () => 0 }; this._dlrInit();
+    this.resetE2e(); this.clearMsgs(); this.resetMetrics();
   }
 
   nextId() {
@@ -67,9 +83,14 @@ class MockSmsc extends EventEmitter {
 
   start(opts = {}) {
     if (this.server) return;
+    const red = (opts.dlr && opts.dlr.redelivery) || {};
+    const port = Number(opts.port) || 2775;
     this.o = {
-      port: Number(opts.port) || 2775, host: opts.bindHost || '127.0.0.1',
-      dlrDelay: Math.max(0, Number(opts.dlrDelay ?? 1500)),
+      port, host: opts.bindHost || '127.0.0.1',
+      // DLR delay after submit (ms): fixed, or drawn from a distribution (uniform: ± spread, normal: σ = spread, exponential)
+      dlrDelay: Math.max(0, num(opts.dlrDelay, 1500)),
+      dlrDelayMode: ['fixed', 'uniform', 'normal', 'exponential'].includes(opts.dlrDelayMode) ? opts.dlrDelayMode : 'fixed',
+      dlrDelaySpread: Math.max(0, num(opts.dlrDelaySpread, 0)),
       failRate: Math.max(0, Math.min(1, Number(opts.failRate || 0))),
       maxTps: Math.max(0, Number(opts.maxTps || 0)),          // 0 = unlimited
       respDelay: Math.max(0, Number(opts.respDelay || 0)),
@@ -78,18 +99,33 @@ class MockSmsc extends EventEmitter {
       systemId: opts.systemId || '', password: opts.password || '',
       // Test scenario only: hand out the same short ids again every N submits (0 = off, the default)
       idReuse: Math.max(0, Math.floor(Number(opts.idReuse || 0))),
-      // DLR redelivery (dlr.redelivery.*): DLRs that cannot be delivered are kept per system_id, survive a vendor
-      // restart (journal in stateDir) and go out when that system_id binds again
-      dlrRedelivery: ((opts.dlr && opts.dlr.redelivery && opts.dlr.redelivery.enabled) ?? opts.dlrRedelivery) !== false,
-      dlrRedeliveryTps: Math.max(1, Number((opts.dlr && opts.dlr.redelivery && opts.dlr.redelivery.tps) ?? opts.dlrRedeliveryTps ?? 500) || 500),
-      dlrRetentionMs: Math.max(0.0001, Number((opts.dlr && opts.dlr.redelivery && opts.dlr.redelivery.retentionHours) ?? opts.dlrRetentionHours ?? 72) || 72) * 3600e3,
-      dlrWindow: Math.max(1, Number(opts.dlrWindow || 1000)),           // unconfirmed deliver_sm per connection
-      dlrRespTimeoutMs: Math.max(0.1, Number(opts.dlrRespTimeout ?? 30) || 30) * 1000,
-      maxPendingDlr: Math.max(1, Number(opts.maxPendingDlr || 1000000)),
+      // DLR redelivery (dlr.redelivery.*): undeliverable DLRs are kept per system_id, survive a restart (journal in
+      // stateDir) and go out when that system_id binds again; the backlog then drains at dlrRedeliveryTps
+      dlrRedelivery: (red.enabled ?? opts.dlrRedelivery) !== false,
+      dlrRedeliveryTps: Math.max(1, num(red.tps ?? opts.dlrRedeliveryTps, 500)),
+      dlrRetentionMs: Math.max(0.0001, num(red.retentionHours ?? opts.dlrRetentionHours, 72)) * 3600e3, // max age
+      // DLR flow: window (unconfirmed deliver_sm per connection) and optional rate limits (0 = unlimited)
+      dlrWindow: Math.max(1, num(opts.dlrWindow, 1000)),
+      dlrMaxTps: Math.max(0, num(opts.dlrMaxTps, 0)),
+      dlrMaxTpsPerBind: Math.max(0, num(opts.dlrMaxTpsPerBind, 0)),
+      dlrRespTimeoutMs: Math.max(0.1, num(opts.dlrRespTimeout, 30)) * 1000,
+      // Retries after an error or no answer: exponential back-off with jitter between these bounds
+      dlrRetryMinMs: Math.max(10, num(opts.dlrRetryMinMs, 1000)),
+      dlrRetryMaxMs: Math.max(10, num(opts.dlrRetryMaxMs, 30000)),
+      dlrMaxAttempts: Math.max(0, Math.floor(num(opts.dlrMaxAttempts, 0))),     // 0 = no limit (max age still applies)
+      dlrPermanentErrors: parseCodes(opts.dlrPermanentErrors, PERMANENT_DEFAULT),
+      maxPendingDlr: Math.max(1, num(opts.maxPendingDlr, 5000000)),
       stateDir: opts.stateDir || '',
+      // Metrics: HTTP endpoint (0 = off) and a one-line summary every metricsIntervalMs on stdout
+      metricsPort: opts.metricsPort === 0 || opts.metricsPort === '0' ? 0 : Math.max(0, num(opts.metricsPort, port + 1000)),
+      metricsHost: opts.metricsHost || '127.0.0.1',
+      metricsLog: !!opts.metricsLog,
+      metricsIntervalMs: Math.max(1000, num(opts.metricsIntervalMs, 5000)),
     };
+    this.o.dlrDelaySample = delaySampler(this.o.dlrDelayMode, this.o.dlrDelay, this.o.dlrDelaySpread);
     this.idPrefix = idPrefix(); this.idc = 0; // fresh, never-seen ids after every (re)start
     this.stopping = false;
+    this.resetMetrics();
     this._dlrInit();
     this.server = net.createServer(sock => this._onConn(sock));
     this.server.on('error', e => {
@@ -102,35 +138,58 @@ class MockSmsc extends EventEmitter {
       this.listening = true; this.emit('listening');
       this.emit('log', this.o.maxTps ? msg('Vendor listening on {host}:{port} (limit {tps} TPS)', { host: this.o.host, port: this.o.port, tps: this.o.maxTps }) : msg('Vendor listening on {host}:{port}', { host: this.o.host, port: this.o.port }));
     });
+    this._startMetricsHttp();
     this.secStart = Date.now(); this.secCount = 0;
-    this.timer = setInterval(() => this._tick(), 20);
+    this.timer = setInterval(() => this._tick(), TICK_MS);
     this.respQ = []; this.respHead = 0; this.nextFree = 0;
     if (this.o.capacity) this.capTimer = setInterval(() => this._flushResp(), 2);
-    this.statTimer = setInterval(() => {
-      const e = this.e2e;
-      const D = this.D, bySid = {};
-      for (const S of D.sids.values()) if (S.pending) bySid[S.sid] = S.pending;
-      this.emit('stats', { ...this.stats, msgTotal: this.msgTotal, conns: [...this.conns].filter(c => c.bound).length,
-        dlrPending: D.live.size, dlrPendingBySid: bySid, dlrRedelivered: D.redelivered, dlrExpired: D.expired, dlrDropped: D.dropped, dlrRetried: D.retried,
-        respQueue: (this.respQ || []).length - (this.respHead || 0),
-        e2e: { n: e.n, dup: e.dup, sec: e.sec.summary(), total: e.hist.summary() } });
-      e.sec = new Hist();
-      this.stats.rx = 0; this.stats.throttled = 0; this.stats.dlrSent = 0;
-    }, 1000);
+    this.statTimer = setInterval(() => this._secondStats(), 1000);
+    this.metricsTimer = setInterval(() => this._metricsWindow(), this.o.metricsIntervalMs);
+  }
+
+  _secondStats() {
+    const e = this.e2e, D = this.D, M = this.M, bySid = {};
+    let retryWaiting = 0;
+    for (const S of D.sids.values()) { if (S.pending) bySid[S.sid] = S.pending; retryWaiting += S.retry.size; }
+    const r = this.sec.resp.summary(); this.sec.resp = new Hist();
+    this.emit('stats', { ...this.stats, msgTotal: this.msgTotal, conns: [...this.conns].filter(c => c.bound).length,
+      dlrPending: D.pending, dlrPendingBySid: bySid, dlrRetryWaiting: retryWaiting,
+      dlrRedelivered: M.redelivered, dlrExpired: M.expired, dlrDropped: M.dropped, dlrRetried: M.retried,
+      dlrRejected: Object.values(M.rejectedByCode).reduce((a, b) => a + b, 0), dlrPermanentFailed: M.permanentFailed,
+      submitRespP99: r.p99 ?? null,
+      respQueue: (this.respQ || []).length - (this.respHead || 0),
+      e2e: { n: e.n, dup: e.dup, sec: e.sec.summary(), total: e.hist.summary() } });
+    e.sec = new Hist();
+    this.stats.rx = 0; this.stats.throttled = 0; this.stats.dlrSent = 0;
   }
 
   _onConn(sock) {
     sock.setNoDelay(true);
-    const c = { sock, bound: false, rx: false, buf: Buffer.alloc(0), out: [], inflight: new Map() };
+    const c = { sock, bound: false, rx: false, buf: Buffer.alloc(0), hi: [], hiT: [], lo: [], loBytes: 0, inflight: new Map(), tok: 0, tokAt: 0, rxT: 0 };
     this.conns.add(c);
-    sock.on('data', d => { c.buf = c.buf.length ? Buffer.concat([c.buf, d]) : d; this._parse(c); });
+    sock.on('data', d => { c.rxT = performance.now(); c.buf = c.buf.length ? Buffer.concat([c.buf, d]) : d; this._parse(c); });
     sock.on('error', () => {});
     sock.on('close', () => { this.conns.delete(c); this._connClosed(c); });
   }
 
-  _write(c, b) {
-    c.out.push(b);
-    if (!c.flushPending) { c.flushPending = true; setImmediate(() => { c.flushPending = false; if (c.out.length && !c.sock.destroyed) { c.sock.write(c.out.length === 1 ? c.out[0] : Buffer.concat(c.out)); } c.out = []; }); }
+  // Two output queues per connection. hi: responses (t0 = when the request arrived, for the submit_sm_resp latency
+  // metric; -1 = not measured). lo: DLRs and MOs, written after the responses and only while the socket keeps up.
+  _write(c, b, t0 = -1) { c.hi.push(b); c.hiT.push(t0); this._schedFlush(c); }
+  _writeLo(c, b) { c.lo.push(b); c.loBytes += b.length; this._schedFlush(c); }
+  _schedFlush(c) { if (!c.flushPending) { c.flushPending = true; setImmediate(() => this._flush(c)); } }
+  _flush(c) {
+    c.flushPending = false;
+    if (c.sock.destroyed) { c.hi = []; c.hiT = []; c.lo = []; c.loBytes = 0; return; }
+    if (c.hi.length) {
+      c.sock.write(c.hi.length === 1 ? c.hi[0] : Buffer.concat(c.hi));
+      const now = performance.now();
+      for (const t of c.hiT) if (t >= 0) { const l = now - t; this.M.resp.add(l); this.win.resp.add(l); this.sec.resp.add(l); }
+      c.hi = []; c.hiT = [];
+    }
+    if (c.lo.length) {
+      if (c.sock.writableLength < DLR_SOCKET_BYTES) { c.sock.write(c.lo.length === 1 ? c.lo[0] : Buffer.concat(c.lo)); c.lo = []; c.loBytes = 0; }
+      else if (!c.waitDrain) { c.waitDrain = true; c.sock.once('drain', () => { c.waitDrain = false; this._schedFlush(c); }); }
+    }
   }
 
   _parse(c) {
@@ -169,20 +228,21 @@ class MockSmsc extends EventEmitter {
   }
 
   _submit(c, seq, body) {
+    const t0 = c.rxT;
     if (!c.bound) return this._write(c, respWithCstr(CMD.submit_sm, 0x04, seq, ''));
-    this.stats.rx++;
+    this.stats.rx++; this.M.submitted++; this.win.submitted++;
     const now = Date.now();
     if (this.o.maxTps) {
       if (now - this.secStart >= 1000) { this.secStart = now; this.secCount = 0; }
-      if (++this.secCount > this.o.maxTps) { this.stats.throttled++; return this._write(c, respWithCstr(CMD.submit_sm, ST.RTHROTTLED, seq, '')); }
+      if (++this.secCount > this.o.maxTps) { this.stats.throttled++; this.M.throttled++; return this._write(c, respWithCstr(CMD.submit_sm, ST.RTHROTTLED, seq, ''), t0); }
     }
     const id = this.nextId();
     const resp = respWithCstr(CMD.submit_sm, ST.OK, seq, id);
     if (this.o.capacity) {
       // Fixed processing rate: above capacity the queue and latency grow, like a real system
       this.nextFree = Math.max(now, this.nextFree) + 1000 / this.o.capacity;
-      this.respQ.push({ due: this.nextFree + this.o.respDelay, c, resp });
-    } else if (this.o.respDelay) setTimeout(() => this._write(c, resp), this.o.respDelay); else this._write(c, resp);
+      this.respQ.push({ due: this.nextFree + this.o.respDelay, c, resp, t0 });
+    } else if (this.o.respDelay) setTimeout(() => this._write(c, resp, t0), this.o.respDelay); else this._write(c, resp, t0);
 
     // Skip ahead to registered_delivery
     let p = 0, s;
@@ -200,7 +260,7 @@ class MockSmsc extends EventEmitter {
     this.msgs[this.msgHead] = { t: now, sid: c.sid || '', src, srcTon, dst, dstTon, esm, dcs, reg, id, sm: Buffer.from(sm) };
     this.msgHead = (this.msgHead + 1) % KEEP; this.msgTotal++;
     this.encCount[dcs] = (this.encCount[dcs] || 0) + 1;
-    if (reg) this._dlrCreate(c.sid || '', { id, src, srcTon, srcNpi, dst, dstTon, dstNpi }, now);
+    if (reg) this._dlrCreate(c.sid || '', id, src, srcTon, srcNpi, dst, dstTon, dstNpi, now);
   }
 
   // data_coding and the message bytes (short_message, or the message_payload TLV when short_message is empty)
@@ -243,83 +303,92 @@ class MockSmsc extends EventEmitter {
 
   _flushResp() {
     const now = Date.now(), q = this.respQ; let h = this.respHead;
-    while (h < q.length && q[h].due <= now) { const r = q[h++]; if (!r.c.sock.destroyed) this._write(r.c, r.resp); }
+    while (h < q.length && q[h].due <= now) { const r = q[h++]; if (!r.c.sock.destroyed) this._write(r.c, r.resp, r.t0); }
     if (h > 50000 || h === q.length) { this.respQ = q.slice(h); h = 0; }
     this.respHead = h;
   }
 
   // ---------- DLRs ----------
-  // Every DLR is built once, when the message is submitted, and never changes afterwards: a redelivered DLR has the
-  // same id (receipt text and receipted_message_id TLV), stat, err, submit date and done date as the first attempt.
-  _dlrBody(d, created, done) {
-    const fail = Math.random() < this.o.failRate;
-    const stat = fail ? 'UNDELIV' : 'DELIVRD';
-    const fmt = ts => new Date(ts).toISOString().replace(/[-T:]/g, '').slice(2, 12);
-    const txt = Buffer.from(`id:${d.id} sub:001 dlvrd:${fail ? '000' : '001'} submit date:${fmt(created)} done date:${fmt(done)} stat:${stat} err:${fail ? '001' : '000'} text:`, 'latin1');
-    const rid = Buffer.from(d.id + '\0', 'latin1');
-    const t1 = Buffer.alloc(4); t1.writeUInt16BE(0x001e, 0); t1.writeUInt16BE(rid.length, 2);
-    return Buffer.concat([
-      Buffer.from([0]),                                                  // service_type
-      Buffer.from([d.dstTon, d.dstNpi]), Buffer.from(d.dst + '\0', 'latin1'),
-      Buffer.from([d.srcTon, d.srcNpi]), Buffer.from(d.src + '\0', 'latin1'),
-      Buffer.from([0x04, 0, 0, 0, 0, 0, 0, 0, 0, txt.length]),           // esm_class 0x04 (receipt) .. sm_length
-      txt, t1, rid,                                                      // receipted_message_id
-      Buffer.from([0x04, 0x27, 0x00, 0x01, fail ? 5 : 2]),               // message_state
-    ]);
+  // A DLR is decided once, when the message is submitted (id, stat, submit and done date), and never changes: a
+  // redelivered DLR is byte-for-byte the first attempt. The PDU is built from those fields each time it is sent, so a
+  // pending DLR costs a few hundred bytes of memory.
+  _dlrPdu(r, seq) {
+    if (r.body) { const h = header(CMD.deliver_sm, 0, seq, r.body.length); r.body.copy(h, 16); return h; } // restored from 1.6.0
+    const txt = `id:${r.id} sub:001 dlvrd:${r.fail ? '000' : '001'} submit date:${ymdhm(r.created)} done date:${ymdhm(r.due)} stat:${r.fail ? 'UNDELIV' : 'DELIVRD'} err:${r.fail ? '001' : '000'} text:`;
+    const len = 1 + 2 + r.dst.length + 1 + 2 + r.src.length + 1 + 10 + txt.length + 4 + r.id.length + 1 + 5;
+    const b = header(CMD.deliver_sm, 0, seq, len); let o = 16;
+    b[o++] = 0;                                                         // service_type
+    b[o++] = r.dstTon; b[o++] = r.dstNpi; o += b.write(r.dst, o, 'latin1'); b[o++] = 0;
+    b[o++] = r.srcTon; b[o++] = r.srcNpi; o += b.write(r.src, o, 'latin1'); b[o++] = 0;
+    b[o++] = 0x04; for (let i = 0; i < 8; i++) b[o++] = 0; b[o++] = txt.length; // esm_class 0x04 (receipt) .. sm_length
+    o += b.write(txt, o, 'latin1');
+    b.writeUInt16BE(0x001e, o); b.writeUInt16BE(r.id.length + 1, o + 2); o += 4;   // receipted_message_id
+    o += b.write(r.id, o, 'latin1'); b[o++] = 0;
+    b[o++] = 0x04; b[o++] = 0x27; b[o++] = 0; b[o++] = 1; b[o++] = r.fail ? 5 : 2; // message_state
+    return b;
   }
 
   _dlrInit() {
     if (this.journal) this.journal.close();
     this.journal = null;
-    this.D = { delayQ: [], dh: 0, sids: new Map(), live: new Map(), n: 0, redelivered: 0, expired: 0, dropped: 0, retried: 0, nextCheck: 0 };
+    this.D = { delay: new MinHeap('due'), sids: new Map(), pending: 0, n: 0, tok: 0, tokAt: 0, nextCheck: 0 };
     if (!this.o.dlrRedelivery || !this.o.stateDir) return;
     // Pending DLRs from the last run come back first, oldest first, and go out when their system_id binds
-    this.journal = new DlrJournal(path.join(this.o.stateDir, `dlr-queue-${this.o.port}.log`));
-    const now = Date.now(), keep = []; let expired = 0;
-    try { for (const r of this.journal.load()) (now - r.created > this.o.dlrRetentionMs ? expired++ : keep.push(r)); }
-    catch (e) { this.emit('log', { text: 'DLR queue file unreadable, starting empty: ' + e.message }); }
-    this.journal.rewrite(keep);
+    const file = path.join(this.o.stateDir, `dlr-queue-${this.o.port}.log`);
+    const now = Date.now(); let keep = [], expired = 0;
+    try { for (const r of journal.load(file)) (now - r.created > this.o.dlrRetentionMs ? expired++ : keep.push(r)); }
+    catch (e) { this.emit('log', { text: 'DLR queue file unreadable, starting empty: ' + e.message }); keep = []; }
+    journal.rewrite(file, keep);
     for (const r of keep) {
-      const rec = { ...r, held: true, fails: 0, nextAt: 0, attempts: 0, c: null };
-      this.D.live.set(rec.k, rec); this._sid(rec.sid).pending++;
-      (rec.due > now ? this.D.delayQ : this._sid(rec.sid).q).push(rec);
+      Object.assign(r, { held: true, fails: 0, nextAt: 0, attempts: 0, c: null, gone: false });
+      this.D.pending++; this._sid(r.sid).pending++;
+      if (r.due > now) this.D.delay.push(r); else this._sid(r.sid).q.push(r);
     }
-    this.D.delayQ.sort((a, b) => a.due - b.due);
     this.D.n = keep.length ? keep[keep.length - 1].n + 1 : 0;
-    this.D.expired = expired;
+    this.M.expired += expired;
+    this.journal = new journal.JournalWriter(file, keep.length);
     if (keep.length || expired) this.emit('log', msg('Restored {n} pending DLRs from the last run ({exp} expired)', { n: keep.length, exp: expired }));
   }
 
   _sid(sid) {
     let S = this.D.sids.get(sid);
-    if (!S) this.D.sids.set(sid, S = { sid, q: [], qh: 0, retry: [], pending: 0, tokens: 0, last: Date.now(), down: false });
+    if (!S) this.D.sids.set(sid, S = { sid, q: [], qh: 0, retry: new MinHeap('nextAt'), pending: 0, tokens: 0, last: Date.now(), down: false });
     return S;
   }
 
-  _dlrCreate(sid, d, now) {
+  _dlrCreate(sid, id, src, srcTon, srcNpi, dst, dstTon, dstNpi, now) {
     const D = this.D;
-    if (D.live.size >= this.o.maxPendingDlr) { D.dropped++; return; }
-    const n = D.n++, due = now + this.o.dlrDelay;
-    const r = { k: this.idPrefix + '.' + n.toString(36), sid, created: now, due, n, id: d.id, body: this._dlrBody(d, now, due), held: false, fails: 0, nextAt: 0, attempts: 0, c: null };
-    D.live.set(r.k, r); this._sid(sid).pending++;
+    if (D.pending >= this.o.maxPendingDlr) return this._count('dropped', 'overflow');
+    const n = D.n++;
+    const r = { k: this.idPrefix + '.' + n.toString(36), sid, created: now, due: now + this.o.dlrDelaySample(), n, id, src, srcTon, srcNpi, dst, dstTon, dstNpi,
+      fail: this.o.failRate > 0 && Math.random() < this.o.failRate, held: false, fails: 0, nextAt: 0, attempts: 0, c: null, gone: false };
+    D.pending++; this._sid(sid).pending++;
     if (this.journal) this.journal.add(r);
-    D.delayQ.push(r);
+    D.delay.push(r);
   }
 
-  // Confirmed, expired or dropped: off the queue for good
-  _dlrGone(r, why) {
-    const D = this.D;
-    if (!D.live.delete(r.k)) return;
-    this._sid(r.sid).pending--;
+  _count(what, reason) {
+    const M = this.M; M[what]++; this.win[what] = (this.win[what] || 0) + 1;
+    if (reason) M.dropReasons[reason] = (M.dropReasons[reason] || 0) + 1;
+  }
+
+  // Off the queue for good: confirmed, failed permanently, expired or dropped
+  _dlrGone(r, why, reason) {
+    if (r.gone) return;
+    r.gone = true; this.D.pending--; this._sid(r.sid).pending--;
     if (this.journal) this.journal.remove(r.k);
-    if (why === 'redelivered') D.redelivered++; else if (why === 'expired') D.expired++; else if (why === 'dropped') D.dropped++;
+    if (why === 'ok' || why === 'redelivered') { this.M.confirmed++; this.win.confirmed++; if (why === 'redelivered') this.M.redelivered++; }
+    else this._count(why, reason);
   }
 
-  // Not confirmed (error status or no deliver_sm_resp in time): try again after 1, 2, 4 … 60 s
+  // Not confirmed: a transient error or no deliver_sm_resp in time. Retried after an exponential back-off with jitter
+  // (dlrRetryMinMs … dlrRetryMaxMs), until it is confirmed, fails permanently, reaches dlrMaxAttempts or its max age.
   _dlrFail(r, now) {
-    if (!this.o.dlrRedelivery) return this._dlrGone(r, 'dropped');
-    r.fails++; r.held = true; r.nextAt = now + Math.min(60000, 1000 * 2 ** (r.fails - 1));
-    this.D.retried++;
+    if (!this.o.dlrRedelivery) return this._dlrGone(r, 'dropped', 'redeliveryOff');
+    if (this.o.dlrMaxAttempts && r.attempts >= this.o.dlrMaxAttempts) return this._dlrGone(r, 'dropped', 'maxAttempts');
+    if (now - r.created > this.o.dlrRetentionMs) return this._dlrGone(r, 'expired');
+    r.fails++; r.nextAt = now + backoff(r.fails, this.o.dlrRetryMinMs, this.o.dlrRetryMaxMs);
+    this.M.retried++;
     this._sid(r.sid).retry.push(r);
   }
 
@@ -327,100 +396,186 @@ class MockSmsc extends EventEmitter {
     const r = c.inflight.get(seq); if (!r) return; // e.g. the response to an MO
     c.inflight.delete(seq); r.c = null;
     if (status === 0) return this._dlrGone(r, r.held || r.attempts > 1 ? 'redelivered' : 'ok');
+    const k = hex(status); this.M.rejectedByCode[k] = (this.M.rejectedByCode[k] || 0) + 1; this.win.rejected++;
+    if (this.o.dlrPermanentErrors.has(status)) return this._dlrGone(r, 'permanentFailed');
     this._dlrFail(r, Date.now());
   }
 
-  // The connection dropped: whatever it had not confirmed goes back to the front of its system_id's queue
+  // The connection dropped: whatever it had not confirmed goes back to be sent again first (no back-off: the client
+  // did not refuse it), oldest first
   _connClosed(c) {
     if (this.stopping || !c.inflight.size) return;
-    const touched = new Set();
     for (const r of c.inflight.values()) {
       r.c = null;
-      if (!this.o.dlrRedelivery) { this._dlrGone(r, 'dropped'); continue; }
-      r.held = true; r.nextAt = 0;
-      const S = this._sid(r.sid); S.retry.push(r); touched.add(S);
+      if (!this.o.dlrRedelivery) { this._dlrGone(r, 'dropped', 'redeliveryOff'); continue; }
+      r.held = true; r.nextAt = r.n / 1e12; // sorts by creation, all due now
+      this._sid(r.sid).retry.push(r);
     }
     c.inflight.clear();
-    for (const S of touched) S.retry.sort((a, b) => a.n - b.n);
-  }
-
-  _rxConns(sid) {
-    const out = [];
-    for (const c of this.conns) if (c.bound && c.rx && c.sid === sid && !c.sock.destroyed) out.push(c);
-    return out;
   }
 
   _dlrSend(c, r, now) {
     const seq = this.seq++; if (this.seq > 0x7ffffff0) this.seq = 1;
-    const h = header(CMD.deliver_sm, 0, seq, r.body.length); r.body.copy(h, 16);
     r.c = c; r.sentAt = now; r.attempts++;
     c.inflight.set(seq, r);
-    this._write(c, h); this.stats.dlrSent++;
+    this._writeLo(c, this._dlrPdu(r, seq)); this.stats.dlrSent++; this.M.dlrSent++; this.win.dlrSent++;
   }
 
-  // Sends what is due for one system_id: retries first (they are the oldest), then the queue in creation order.
-  // Pending (held) DLRs go out at dlrRedeliveryTps; fresh DLRs behind them wait their turn, then flow at full speed.
-  _drain(S, now) {
-    if (S.qh >= S.q.length && !S.retry.length) return;
-    const conns = this._rxConns(S.sid);
-    if (!conns.length) {
-      if (!this.o.dlrRedelivery) { // old behaviour: nobody to send to, the DLR is lost (now at least counted)
-        for (let i = S.qh; i < S.q.length; i++) this._dlrGone(S.q[i], 'dropped');
-        for (const r of S.retry) this._dlrGone(r, 'dropped');
-        S.q = []; S.qh = 0; S.retry = []; return;
+  // Token buckets: total and per bind (0 = unlimited), with a small burst so 10 ms ticks stay smooth
+  _refill(o, rate, now) {
+    if (!rate) return;
+    o.tok = Math.min(Math.max(1, rate * 0.05), o.tok + rate * (now - (o.tokAt || now)) / 1000); o.tokAt = now;
+  }
+
+  // Sends what is due for one system_id: retries whose back-off has passed first (they are the oldest), then the
+  // queue in order. The reconnect backlog (held) drains at dlrRedeliveryTps; error retries are not rate-limited by it
+  // and never block fresh DLRs. Window, socket back-pressure, rate limits and the tick's time budget apply to all.
+  _drain(S, now, deadline) {
+    if (S.qh >= S.q.length && !S.retry.size) return true;
+    const conns = this.rxBySid.get(S.sid);
+    if (!conns || !conns.length) {
+      if (!this.o.dlrRedelivery) { // nobody to send to and redelivery off: dropped (counted)
+        for (let i = S.qh; i < S.q.length; i++) this._dlrGone(S.q[i], 'dropped', 'redeliveryOff');
+        for (const r of S.retry.a) this._dlrGone(r, 'dropped', 'redeliveryOff');
+        S.q = []; S.qh = 0; S.retry = new MinHeap('nextAt'); return true;
       }
       if (!S.down) { S.down = true; for (let i = S.qh; i < S.q.length; i++) S.q[i].held = true; }
-      return;
+      return true;
     }
     if (S.down) {
       S.down = false; S.tokens = 0; S.last = now;
-      const n = S.q.length - S.qh + S.retry.length;
+      const n = S.q.length - S.qh + S.retry.size;
       if (n) this.emit('log', msg('Started delivering {n} pending DLRs to {sid}', { n, sid: S.sid || '—' }));
     }
     const rate = this.o.dlrRedeliveryTps;
     S.tokens = Math.min(Math.max(1, rate / 10), S.tokens + rate * (now - S.last) / 1000); S.last = now;
-    const W = this.o.dlrWindow;
-    let due = null;
-    if (S.retry.length) { due = []; const rest = []; for (const r of S.retry) (r.nextAt <= now ? due : rest).push(r); S.retry = rest; }
-    let di = 0;
+    const W = this.o.dlrWindow, D = this.D, total = this.o.dlrMaxTps, perBind = this.o.dlrMaxTpsPerBind;
+    let i = 0, finished = true;
     for (;;) {
+      if ((++i & 31) === 0 && performance.now() > deadline) { finished = false; break; }
+      if (total && D.tok < 1) break;
       let c = null;
-      for (const x of conns) if (x.inflight.size < W && (!c || x.inflight.size < c.inflight.size)) c = x;
+      for (const x of conns) {
+        if (x.inflight.size >= W || x.loBytes + x.sock.writableLength >= DLR_SOCKET_BYTES || (perBind && x.tok < 1)) continue;
+        if (!c || x.inflight.size < c.inflight.size) c = x;
+      }
       if (!c) break;
-      let r, fromRetry = false;
-      if (due && di < due.length) { r = due[di]; fromRetry = true; }
-      else if (S.qh < S.q.length) r = S.q[S.qh];
-      else break;
-      const limited = fromRetry || r.held;
-      if (limited) { if (S.tokens < 1) break; S.tokens--; }
-      if (fromRetry) di++; else S.qh++;
+      let r;
+      const top = S.retry.peek();
+      if (top && top.nextAt <= now) r = S.retry.pop();
+      else if (S.qh < S.q.length) {
+        r = S.q[S.qh];
+        if (r.held) { if (S.tokens < 1) break; S.tokens--; }
+        S.qh++;
+      } else break;
+      if (r.gone) continue;
+      if (now - r.created > this.o.dlrRetentionMs) { this._dlrGone(r, 'expired'); continue; }
+      if (total) D.tok--; if (perBind) c.tok--;
       this._dlrSend(c, r, now);
     }
-    if (due && di < due.length) { S.retry = due.slice(di).concat(S.retry); }
     if (S.qh > 50000 || S.qh === S.q.length) { S.q = S.qh === S.q.length ? [] : S.q.slice(S.qh); S.qh = 0; }
+    return finished;
   }
 
   _dlrHousekeeping(now) {
     const D = this.D, ret = this.o.dlrRetentionMs, to = this.o.dlrRespTimeoutMs;
-    // deliver_sm sent but no deliver_sm_resp in time
-    for (const c of this.conns) for (const [seq, r] of c.inflight) { if (now - r.sentAt < to) break; c.inflight.delete(seq); r.c = null; this._dlrFail(r, now); }
-    // Older than the retention time: dropped and counted as expired
+    // deliver_sm sent but no deliver_sm_resp in time: retried like a transient error
+    for (const c of this.conns) for (const [seq, r] of c.inflight) {
+      if (now - r.sentAt < to) break;
+      c.inflight.delete(seq); r.c = null; this.M.timeouts++; this._dlrFail(r, now);
+    }
+    // Older than the max age: dropped and counted as expired (queue heads; retries are checked when they come due)
     for (const S of D.sids.values()) {
       while (S.qh < S.q.length && now - S.q[S.qh].created > ret) this._dlrGone(S.q[S.qh++], 'expired');
-      if (S.retry.length) S.retry = S.retry.filter(r => now - r.created > ret ? (this._dlrGone(r, 'expired'), false) : true);
+      if (S.down && S.retry.size && now - S.retry.peek().created > ret) S.retry.removeWhere(r => now - r.created > ret).forEach(r => this._dlrGone(r, 'expired'));
     }
-    if (this.journal && this.journal.needsCompaction(D.live.size)) { this.journal.flush(); this.journal.rewrite([...D.live.values()]); }
   }
 
   _tick() {
-    const now = Date.now(), D = this.D;
-    let h = D.dh; const q = D.delayQ;
-    while (h < q.length && q[h].due <= now) { const r = q[h++]; const S = this._sid(r.sid); if (S.down) r.held = true; S.q.push(r); }
-    if (h > 50000 || h === q.length) { D.delayQ = h === q.length ? [] : q.slice(h); h = 0; }
-    D.dh = h;
-    for (const S of D.sids.values()) this._drain(S, now);
+    const now = Date.now(), D = this.D, deadline = performance.now() + BUDGET_MS;
+    // DLRs whose delay has passed move to their system_id's queue
+    for (let i = 0; D.delay.size && D.delay.peek().due <= now; i++) {
+      if ((i & 255) === 255 && performance.now() > deadline) break;
+      const r = D.delay.pop(); if (r.gone) continue;
+      const S = this._sid(r.sid); if (S.down) r.held = true; S.q.push(r);
+    }
+    // Receivers per system_id, once per tick
+    this.rxBySid = new Map();
+    for (const c of this.conns) {
+      if (!c.bound || !c.rx || c.sock.destroyed) continue;
+      let l = this.rxBySid.get(c.sid); if (!l) this.rxBySid.set(c.sid, l = []); l.push(c);
+      this._refill(c, this.o.dlrMaxTpsPerBind, now);
+    }
+    this._refill(D, this.o.dlrMaxTps, now);
+    // Round-robin start so one busy system_id cannot starve the others when the budget runs out
+    const sids = [...D.sids.values()]; const start = sids.length ? (this.rr = ((this.rr || 0) + 1) % sids.length) : 0;
+    for (let k = 0; k < sids.length; k++) if (!this._drain(sids[(start + k) % sids.length], now, deadline)) break;
     if (now >= D.nextCheck) { D.nextCheck = now + 1000; this._dlrHousekeeping(now); }
     if (this.journal) this.journal.flush();
+  }
+
+  // ---------- Metrics ----------
+  // Counters since the last reset (resettable over HTTP), plus a window for rates and the periodic log line
+  resetMetrics() {
+    const prev = this.M;
+    this.M = { since: Date.now(), submitted: 0, throttled: 0, dlrSent: 0, confirmed: 0, redelivered: 0, retried: 0, timeouts: 0,
+      rejectedByCode: {}, permanentFailed: 0, dropped: 0, dropReasons: {}, expired: 0, resp: new Hist() };
+    this.win = this._newWin(); this.sec = { resp: new Hist() };
+    this.cpu = { at: performance.now(), usage: process.cpuUsage() };
+    if (!this.loopDelay) { try { this.loopDelay = monitorEventLoopDelay({ resolution: 10 }); this.loopDelay.enable(); } catch {} }
+    else this.loopDelay.reset();
+    return prev;
+  }
+  _newWin() { return { at: performance.now(), submitted: 0, dlrSent: 0, confirmed: 0, rejected: 0, resp: new Hist() }; }
+
+  // Gauges: what is waiting right now
+  _depth() {
+    let ready = 0, retry = 0, inflight = 0;
+    for (const S of this.D.sids.values()) { ready += S.q.length - S.qh; retry += S.retry.size; }
+    for (const c of this.conns) inflight += c.inflight.size;
+    return { pending: this.D.pending, notYetDue: this.D.delay.size, ready, retryWaiting: retry, inflight };
+  }
+
+  metrics() {
+    const M = this.M, w = this.win, secs = Math.max(0.001, (performance.now() - w.at) / 1000);
+    const pct = h => { const s = h.summary(); return s.n ? { p50: +s.p50.toFixed(2), p95: +s.p95.toFixed(2), p99: +s.p99.toFixed(2), max: +s.max.toFixed(2), n: s.n } : { n: 0 }; };
+    const nowP = performance.now(), cu = process.cpuUsage(this.cpu.usage), mem = process.memoryUsage();
+    const cpuPct = (cu.user + cu.system) / 1000 / Math.max(1, nowP - this.cpu.at) * 100;
+    return {
+      since: new Date(M.since).toISOString(), seconds: Math.round((Date.now() - M.since) / 1000),
+      binds: [...this.conns].filter(c => c.bound).length,
+      submitResp: pct(M.resp),                                    // ms, request read → response written, since reset
+      submitted: M.submitted, throttled: M.throttled,
+      rates: { windowSeconds: +secs.toFixed(1), submitTps: Math.round(w.submitted / secs), dlrSentTps: Math.round(w.dlrSent / secs), dlrConfirmedTps: Math.round(w.confirmed / secs), dlrRejectedTps: Math.round(w.rejected / secs), submitResp: pct(w.resp) },
+      dlr: { ...this._depth(), sent: M.dlrSent, confirmed: M.confirmed, redelivered: M.redelivered, retried: M.retried, timeouts: M.timeouts,
+        rejectedByCode: { ...M.rejectedByCode }, permanentFailed: M.permanentFailed, dropped: M.dropped, dropReasons: { ...M.dropReasons }, expired: M.expired },
+      process: { cpuPct: +cpuPct.toFixed(1), heapMB: Math.round(mem.heapUsed / 1048576), rssMB: Math.round(mem.rss / 1048576),
+        eventLoopDelayP99Ms: this.loopDelay ? +(this.loopDelay.percentile(99) / 1e6).toFixed(2) : null },
+    };
+  }
+
+  // Every metricsIntervalMs: one summary line on stdout (docker logs), then a new window for the rates
+  _metricsWindow() {
+    const m = this.metrics(), r = m.rates, d = m.dlr, p = r.submitResp;
+    if (this.o.metricsLog) {
+      const rej = Object.entries(d.rejectedByCode).map(([k, n]) => `${k}:${n}`).join(',') || '0';
+      process.stdout.write(`[metrics] submit ${r.submitTps}/s resp p50 ${p.p50 ?? '-'} p95 ${p.p95 ?? '-'} p99 ${p.p99 ?? '-'} ms | dlr sent ${r.dlrSentTps}/s ok ${r.dlrConfirmedTps}/s rejected ${r.dlrRejectedTps}/s | pending ${d.pending} (due later ${d.notYetDue}, ready ${d.ready}, retry ${d.retryWaiting}, in flight ${d.inflight}) | rejected by code ${rej} | dropped ${d.dropped} permanent ${d.permanentFailed} expired ${d.expired} | cpu ${m.process.cpuPct}% heap ${m.process.heapMB} MB loop p99 ${m.process.eventLoopDelayP99Ms} ms\n`);
+    }
+    this.win = this._newWin(); this.cpu = { at: performance.now(), usage: process.cpuUsage() };
+  }
+
+  // GET /metrics → JSON · POST /metrics/reset → the counters before the reset, then zeroed (gauges stay)
+  _startMetricsHttp() {
+    if (!this.o.metricsPort) return;
+    this.metricsServer = http.createServer((req, res) => {
+      const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj, null, 1)); };
+      const url = (req.url || '').split('?')[0];
+      if (url === '/metrics' && req.method === 'GET') return send(200, this.metrics());
+      if (url === '/metrics/reset' && req.method === 'POST') { const before = this.metrics(); this.resetMetrics(); return send(200, { ok: true, before }); }
+      send(404, { endpoints: ['GET /metrics', 'POST /metrics/reset'] });
+    });
+    this.metricsServer.on('error', e => this.emit('log', { text: `Metrics endpoint not started on ${this.o.metricsHost}:${this.o.metricsPort}: ${e.message}` }));
+    this.metricsServer.listen(this.o.metricsPort, this.o.metricsHost, () => this.emit('log', { text: `Metrics on http://${this.o.metricsHost}:${this.o.metricsPort}/metrics` }));
   }
 
   sendMo(text, from, to) {
@@ -437,16 +592,18 @@ class MockSmsc extends EventEmitter {
         Buffer.from([0, 0, 0, 0, 0, 0, 0, isGsm ? 0 : 8, 0, Math.min(msg.length, 254)]), msg.subarray(0, 254),
       ]);
       const hb = header(CMD.deliver_sm, 0, this.seq++, bodyB.length); bodyB.copy(hb, 16);
-      this._write(c, hb); n++;
+      this._writeLo(c, hb); n++;
     }
     return n;
   }
 
   stop() {
-    clearInterval(this.timer); clearInterval(this.statTimer); clearInterval(this.capTimer); this.respQ = []; this.respHead = 0;
-    // Pending DLRs are already in the journal; whatever was in flight stays there too and is sent again after a restart
+    clearInterval(this.timer); clearInterval(this.statTimer); clearInterval(this.capTimer); clearInterval(this.metricsTimer);
+    this.respQ = []; this.respHead = 0;
+    // Pending DLRs are in the journal; whatever was in flight stays there too and is sent again after a restart
     this.stopping = true;
     if (this.journal) { this.journal.close(); this.journal = null; }
+    if (this.metricsServer) { this.metricsServer.close(); this.metricsServer = null; }
     for (const c of this.conns) c.sock.destroy();
     this.conns.clear();
     this.listening = false;

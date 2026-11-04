@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.0
+
+- **Built-in vendor under gateway load**: built to take 6,000–8,000 TPS from a gateway like a real vendor. See "Built-in vendor under load" in the README
+  - submit_sm_resp no longer waits behind DLRs: responses go out first on every connection; DLRs are sent in short time slices and only while the socket is not backed up. Journal writes and compaction moved to a worker thread (before: 100–150 ms pauses, seconds with ~1M pending)
+  - Retries use exponential back-off with jitter, 1 s → 30 s by default, so DLRs rejected together do not return together. MSGQFUL (0x14), THROTTLED (0x58) and other temporary errors are retried until delivered; permanent errors (0x01, 0x02, 0x03, 0x0A, 0x0B, 0x0C by default, configurable) are not retried and are counted as permanentFailed
+  - Before, retries of a system_id were limited to 500/s and blocked fresh DLRs behind them, and the pending queue was capped at 1M, after which new DLRs were dropped. Now retries are not rate limited, pending DLRs are held up to 5M and nothing is dropped unless a configured limit says so (attempt limit, off by default; max age, 72 h)
+  - DLR rate limit, total and per bind (off by default); the window still applies
+  - DLR delay: fixed, or uniform, normal or exponential around the mean
+  - Metrics: a one-line summary every 5 s in the vendor log, and `GET /metrics` / `POST /metrics/reset` on 127.0.0.1 (port = vendor port + 1000): submit_sm_resp p50/p95/p99, submit and DLR TPS, queue depth, retry waiting, rejections by code, dropped, permanentFailed, expired, CPU, heap, event-loop delay
+  - New settings in the vendor panel under *Advanced DLR settings*
+- Test gateway: *reject every Nth DLR* with a chosen status, to recreate a gateway that answers MSGQFUL
+- `tools/vendor-load-check.js`: the acceptance run (8,000 TPS × 10 min, 10 binds, window 200), with or without 1 in 3 DLRs rejected
+- Acceptance on 2 vCPU: 8,000 TPS × 10 min, 10 binds, window 200 — submit_sm_resp p99 32.5 ms at the client (1.34 ms inside the vendor), 4,779,270 of 4,779,270 DLRs, none dropped. With every third DLR rejected with MSGQFUL: p99 13.8 ms (0.83 ms), 2,388,078 rejections retried, 4,776,158 of 4,776,158 DLRs delivered, none dropped
+
 ## 1.6.0
 
 - **DLR redelivery** in the built-in vendor, like a real SMSC. Before, a DLR the vendor could not send right away was simply lost (in one load test a gateway restart cost 7,329 DLRs). Now:
