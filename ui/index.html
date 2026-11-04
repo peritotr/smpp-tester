@@ -67,6 +67,21 @@
       <label title="Pending DLRs older than this are dropped and counted as expired" data-i18n-attr="title"><span data-i18n>Keep pending DLRs (hours)</span> <input id="mockRetention" type="number" value="72" min="0.01" step="any"></label>
       <label>&nbsp;<button id="mockToggle" data-i18n>Start</button></label>
     </div>
+    <details class="vadv">
+      <summary data-i18n>Advanced DLR settings</summary>
+      <div class="grid2">
+        <label title="How the DLR delay after submit is chosen: always the same, or drawn at random around the DLR delay" data-i18n-attr="title"><span data-i18n>DLR delay type</span> <select id="mockDelayMode"><option value="fixed" data-i18n>Fixed</option><option value="uniform" data-i18n>Uniform ± spread</option><option value="normal" data-i18n>Normal (σ = spread)</option><option value="exponential" data-i18n>Exponential</option></select></label>
+        <label title="Uniform: DLR delay ± this much. Normal: standard deviation. Not used for fixed or exponential." data-i18n-attr="title"><span data-i18n>Delay spread (ms)</span> <input id="mockDelaySpread" type="number" value="0" min="0"></label>
+        <label title="DLRs sent per second in total (0 = unlimited)" data-i18n-attr="title"><span data-i18n>DLR TPS limit</span> <input id="mockDlrTps" type="number" value="0" min="0"></label>
+        <label title="DLRs sent per second on each bind (0 = unlimited)" data-i18n-attr="title"><span data-i18n>DLR TPS per bind</span> <input id="mockDlrTpsBind" type="number" value="0" min="0"></label>
+        <label title="deliver_sm sent but not yet confirmed, per connection" data-i18n-attr="title"><span data-i18n>DLR window</span> <input id="mockDlrWindow" type="number" value="1000" min="1"></label>
+        <label title="0 = no limit; the max age still applies" data-i18n-attr="title"><span data-i18n>Max attempts</span> <input id="mockMaxAttempts" type="number" value="0" min="0"></label>
+        <label title="First retry after an error waits about this long (with jitter), doubling up to the maximum" data-i18n-attr="title"><span data-i18n>Retry back-off min (ms)</span> <input id="mockRetryMin" type="number" value="1000" min="10"></label>
+        <label><span data-i18n>Retry back-off max (ms)</span> <input id="mockRetryMax" type="number" value="30000" min="10"></label>
+        <label class="wide" title="deliver_sm_resp error codes that are never retried; the DLR is counted as a permanent failure. Everything else (e.g. 0x14 MSGQFUL, 0x58 THROTTLED) is retried." data-i18n-attr="title"><span data-i18n>Permanent error codes</span> <input id="mockPermErrors" value="0x01,0x02,0x03,0x0A,0x0B,0x0C" spellcheck="false"></label>
+        <label title="HTTP: GET /metrics, POST /metrics/reset on 127.0.0.1. Empty = vendor port + 1000; 0 = off." data-i18n-attr="title"><span data-i18n>Metrics port</span> <input id="mockMetricsPort" type="number" min="0" placeholder="port + 1000" data-i18n-attr="placeholder"></label>
+      </div>
+    </details>
     <p id="mockAddr" class="small mono"></p>
     <p id="mockStats" class="muted small mono"></p>
     <div class="row"><input id="moText" placeholder="MO text" data-i18n-attr="placeholder" value="Test MO message"><button id="moSend" class="ghost" data-i18n>Send MO</button></div>

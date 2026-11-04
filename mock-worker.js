@@ -3,7 +3,7 @@ const { MockSmsc } = require('./mock-smsc');
 const mock = new MockSmsc();
 const send = require('./ipc-child')(m => {
   try {
-    if (m.type === 'start') mock.start(m.opts);
+    if (m.type === 'start') mock.start({ metricsLog: true, ...m.opts }); // one metrics line every 5 s on stdout (docker logs)
     else if (m.type === 'stop') { mock.stop(); send({ type: 'stopped' }); }
     else if (m.type === 'reset') mock.resetE2e();
     else if (m.type === 'mo') send({ type: 'mo', n: mock.sendMo(m.text, m.from, m.to) });

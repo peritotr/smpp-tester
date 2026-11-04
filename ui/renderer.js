@@ -197,7 +197,8 @@ document.querySelectorAll('.tabs button[data-tab]').forEach(b => b.onclick = () 
 // ---------- Built-in vendor (mock SMSC) ----------
 let mockOn = false, lastMockStats = null;
 window.mockState = { on: false, e2e: null };
-const MOCK_FIELDS = ['mockListen','mockPort','mockDelay','mockSystemId','mockFail','mockMaxTps','mockRespDelay','mockCapacity','mockIdReuse','mockRedeliver','mockRedeliverTps','mockRetention'];
+const MOCK_FIELDS = ['mockListen','mockPort','mockDelay','mockSystemId','mockFail','mockMaxTps','mockRespDelay','mockCapacity','mockIdReuse','mockRedeliver','mockRedeliverTps','mockRetention',
+  'mockDelayMode','mockDelaySpread','mockDlrTps','mockDlrTpsBind','mockDlrWindow','mockMaxAttempts','mockRetryMin','mockRetryMax','mockPermErrors','mockMetricsPort'];
 try { const o = JSON.parse(localStorage.getItem('mockForm') || '{}'); for (const k in o) setVal(k, o[k]); } catch {}
 const saveMockForm = () => { const o = {}; MOCK_FIELDS.forEach(f => o[f] = val(f)); try { localStorage.setItem('mockForm', JSON.stringify(o)); } catch {} };
 MOCK_FIELDS.forEach(f => $(f).addEventListener('change', saveMockForm));
@@ -219,6 +220,10 @@ $('mockToggle').onclick = async () => {
       maxTps: Number(val('mockMaxTps')), respDelay: Number(val('mockRespDelay')), capacity: Number(val('mockCapacity')), systemId: val('mockSystemId').trim(), password: val('mockPassword'),
       idReuse: Number(val('mockIdReuse')) || 0,
       dlrRedelivery: !!val('mockRedeliver'), dlrRedeliveryTps: Number(val('mockRedeliverTps')) || 500, dlrRetentionHours: Number(val('mockRetention')) || 72,
+      dlrDelayMode: val('mockDelayMode'), dlrDelaySpread: Number(val('mockDelaySpread')) || 0,
+      dlrMaxTps: Number(val('mockDlrTps')) || 0, dlrMaxTpsPerBind: Number(val('mockDlrTpsBind')) || 0, dlrWindow: Number(val('mockDlrWindow')) || 1000,
+      dlrMaxAttempts: Number(val('mockMaxAttempts')) || 0, dlrRetryMinMs: Number(val('mockRetryMin')) || 1000, dlrRetryMaxMs: Number(val('mockRetryMax')) || 30000,
+      dlrPermanentErrors: val('mockPermErrors'), ...(val('mockMetricsPort') !== '' ? { metricsPort: Number(val('mockMetricsPort')) } : {}),
     });
     if (!r.ok) return alert(tm(r.error));
     mockOn = true;
@@ -242,6 +247,9 @@ api.on('app:sync', st => {
       setVal('mockListen', o.bindHost); setVal('mockPort', o.port); setVal('mockDelay', o.dlrDelay); setVal('mockSystemId', o.systemId || '');
       setVal('mockFail', Math.round((o.failRate || 0) * 100)); setVal('mockMaxTps', o.maxTps || 0); setVal('mockRespDelay', o.respDelay || 0); setVal('mockCapacity', o.capacity || 0); setVal('mockIdReuse', o.idReuse || 0);
       setVal('mockRedeliver', o.dlrRedelivery !== false); setVal('mockRedeliverTps', o.dlrRedeliveryTps || 500); setVal('mockRetention', o.dlrRetentionHours || 72);
+      setVal('mockDelayMode', o.dlrDelayMode || 'fixed'); setVal('mockDelaySpread', o.dlrDelaySpread || 0); setVal('mockDlrTps', o.dlrMaxTps || 0); setVal('mockDlrTpsBind', o.dlrMaxTpsPerBind || 0);
+      setVal('mockDlrWindow', o.dlrWindow || 1000); setVal('mockMaxAttempts', o.dlrMaxAttempts || 0); setVal('mockRetryMin', o.dlrRetryMinMs || 1000); setVal('mockRetryMax', o.dlrRetryMaxMs || 30000);
+      if (o.dlrPermanentErrors) setVal('mockPermErrors', o.dlrPermanentErrors); setVal('mockMetricsPort', o.metricsPort ?? '');
     }
     if (st.mock.on !== mockOn) setMockUi(st.mock.on);
   }
@@ -263,7 +271,9 @@ function renderMockStats() {
   const m = lastMockStats; if (!mockOn || !m) return;
   $('mockStats').textContent = t('Bound {conns} · received {rx}/s · throttled {thr}/s · DLR {dlr}/s · pending DLR {pend}', { conns: m.conns, rx: m.rx, thr: m.throttled, dlr: m.dlrSent, pend: m.dlrPending })
     + (m.respQueue ? ' · ' + t('queue {n}', { n: m.respQueue }) : '')
-    + (m.dlrRedelivered || m.dlrExpired || m.dlrDropped || m.dlrRetried ? '\n' + t('DLR redelivered {r} · retried {t} · expired {e} · dropped {d}', { r: m.dlrRedelivered || 0, t: m.dlrRetried || 0, e: m.dlrExpired || 0, d: m.dlrDropped || 0 }) : '');
+    + (m.dlrRedelivered || m.dlrExpired || m.dlrDropped || m.dlrRetried ? '\n' + t('DLR redelivered {r} · retried {t} · expired {e} · dropped {d}', { r: m.dlrRedelivered || 0, t: m.dlrRetried || 0, e: m.dlrExpired || 0, d: m.dlrDropped || 0 }) : '')
+    + (m.dlrRejected || m.dlrPermanentFailed ? ' · ' + t('rejected {j} · permanent failures {p}', { j: m.dlrRejected || 0, p: m.dlrPermanentFailed || 0 }) : '')
+    + (m.submitRespP99 != null ? '\n' + t('submit_sm_resp p99 {ms} ms', { ms: m.submitRespP99.toFixed(1) }) : '');
   // Pending DLRs per system_id (title of the stats line)
   const by = Object.entries(m.dlrPendingBySid || {});
   $('mockStats').title = by.length ? t('Pending DLRs per system_id') + ':\n' + by.map(([k, n]) => `${k || '—'}: ${n}`).join('\n') : '';

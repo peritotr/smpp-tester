@@ -1,7 +1,7 @@
 {
   "name": "smpp-tester",
   "productName": "SMPP Tester",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "SMPP test client, load tester and mock vendor (SMSC) with performance reports — desktop app and Docker web server",
   "keywords": [
     "smpp",
@@ -65,11 +65,16 @@
       "mock-worker.js",
       "sms-decode.js",
       "dlr-journal.js",
+      "dlr-journal-worker.js",
+      "dlr-sched.js",
       "ipc-child.js",
       "hist.js",
       "reports.js",
       "ui/**",
       "package.json"
+    ],
+    "asarUnpack": [
+      "dlr-journal-worker.js"
     ],
     "artifactName": "SMPP-Tester-${version}-${os}-${arch}.${ext}",
     "mac": {
