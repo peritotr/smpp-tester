@@ -12,7 +12,7 @@
   - New settings in the vendor panel under *Advanced DLR settings*
 - Test gateway: *reject every Nth DLR* with a chosen status, to recreate a gateway that answers MSGQFUL
 - `tools/vendor-load-check.js`: the acceptance run (8,000 TPS × 10 min, 10 binds, window 200), with or without 1 in 3 DLRs rejected
-@@RESULTS@@
+- Acceptance on 2 vCPU: 8,000 TPS × 10 min, 10 binds, window 200 — submit_sm_resp p99 32.5 ms at the client (1.34 ms inside the vendor), 4,779,270 of 4,779,270 DLRs, none dropped. With every third DLR rejected with MSGQFUL: p99 13.8 ms (0.83 ms), 2,388,078 rejections retried, 4,776,158 of 4,776,158 DLRs delivered, none dropped
 
 ## 1.6.0
 

@@ -207,6 +207,15 @@ curl -s http://127.0.0.1:3775/metrics
 
 `tools/vendor-load-check.js` runs the gateway side (10 binds, window 200) against the vendor and checks submit_sm_resp p99 and that every DLR arrives: `node tools/vendor-load-check.js 8000 600 3` is 8,000 TPS for 10 minutes with every third DLR rejected with MSGQFUL.
 
+Results on a 2 vCPU machine, gateway and vendor on the same host, 10 binds × window 200, DLR delay 1.5 s:
+
+| Run | Submitted | submit_sm_resp p99 (client · vendor) | DLRs delivered | Dropped | Vendor CPU |
+|---|---|---|---|---|---|
+| 8,000 TPS × 10 min | 4,779,270 | 32.5 ms · 1.34 ms | 4,779,270 of 4,779,270 | 0 | 17–22% |
+| Same, every 3rd DLR rejected with MSGQFUL (2,388,078 rejections) | 4,776,158 | 13.8 ms · 0.83 ms | 4,776,158 of 4,776,158 | 0 | ~25% |
+
+The client figure includes the load generator itself, which shares the 2 vCPUs; in a few single seconds its p99 went above 50 ms (worst 79 and 84 ms) while the vendor's own p99 stayed below 2 ms. During the MSGQFUL run about 5,600 DLRs were waiting for a retry at any moment, sent back at ~4,000/s spread by the back-off, on top of 8,000/s fresh ones.
+
 ## How the analysis works
 
 - **Baseline** — median p95 of the first, lightly loaded seconds (the first step in a step test).

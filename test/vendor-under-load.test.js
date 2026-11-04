@@ -118,12 +118,13 @@ test('DLR delay follows the configured distribution', async t => {
 test('metrics endpoint: counters, rates, latency, reset', async t => {
   const port = freePort(), mport = freePort();
   const v = new MockSmsc();
-  v.start({ port, dlrDelay: 0, metricsPort: mport }); await once(v, 'listening');
+  v.start({ port, dlrDelay: 0, dlrRetryMinMs: 100, dlrRetryMaxMs: 400, metricsPort: mport }); await once(v, 'listening');
   t.after(() => v.stop());
-  const g = await gateway(port, n => n % 2 ? 0x14 : 0);
+  const seen = new Set(); // every other DLR is rejected once with MSGQFUL, then accepted
+  const g = await gateway(port, (n, p) => n % 2 && !seen.has(p.receipted_message_id) ? (seen.add(p.receipted_message_id), 0x14) : 0);
   t.after(() => g.destroy());
   await g.submitN(100);
-  await waitFor(() => v.D.pending === 0, 10000);
+  assert.ok(await waitFor(() => v.D.pending === 0, 10000), `pending ${v.D.pending}`);
   let { status, json } = await req(mport, 'GET', '/metrics');
   assert.equal(status, 200);
   assert.equal(json.submitted, 100); assert.equal(json.dlr.confirmed, 100); assert.ok(json.dlr.rejectedByCode['0x14'] > 0);
