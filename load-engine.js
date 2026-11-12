@@ -41,6 +41,8 @@ class LoadEngine extends EventEmitter {
       e2e: !!t.e2e,
       // Per-session window allowed by the gateway account (0 = not given); used in the window advice
       gwWindow: Math.max(0, Math.floor(Number(t.gwWindow) || 0)),
+      // Routing test: client number 1–9, written into the end-to-end marker so each vendor knows which client a message came from
+      clientTag: Math.max(0, Math.min(9, Math.floor(Number(t.clientTag) || 0))),
       criteria: t.criteria || {},
     };
     // Step test: from the start TPS to the target TPS, fixed duration per step
@@ -57,7 +59,8 @@ class LoadEngine extends EventEmitter {
 
     this._buildTemplates(t);
     this.sessions = []; this.rr = 0;
-    this.G = { sent: 0, ok: 0, err: 0, timeouts: 0, throttled: 0, retries: 0, dlr: 0, dlrOk: 0, dlrFail: 0, dlrUnmatched: 0, windowFullMs: 0, errs: {}, dlrStats: {} };
+    this.G = { sent: 0, ok: 0, err: 0, timeouts: 0, throttled: 0, retries: 0, dlr: 0, dlrOk: 0, dlrFail: 0, dlrUnmatched: 0, windowFullMs: 0, errs: {}, dlrStats: {}, okByDst: {} };
+    this.unmatchedIds = [];
     this.S = this._emptySec();
     this.latAll = new Hist(); this.dlrAll = new Hist();
     this.pendingDlr = new Map(); this.earlyDlr = new Map();
@@ -93,8 +96,17 @@ class LoadEngine extends EventEmitter {
   _buildTemplates(t) {
     const a = analyze(t.text || 'Load test', t.encoding || 'auto');
     if (a.error) throw err(a.error);
-    const dsts = String(t.dst || '').split(/[\s,;]+/).filter(Boolean);
-    if (!dsts.length) throw err('Recipient is empty');
+    // Recipients, optionally weighted: "9053XXXXXXXX:70, 9054XXXXXXXX:30" (no weight = 1)
+    const parsed = String(t.dst || '').split(/[\s,;]+/).filter(Boolean).map(x => { const m = /^(.*?)(?::(\d+(?:\.\d+)?))?$/.exec(x); return { dst: m[1], w: m[2] == null ? 1 : Number(m[2]) }; }).filter(x => x.dst && x.w > 0);
+    if (!parsed.length) throw err('Recipient is empty');
+    const dsts = parsed.map(x => x.dst);
+    this.dsts = dsts;
+    // Smooth weighted round-robin over at most 1,000 slots, so a 70/30 mix is also 70/30 within any short stretch
+    const W = parsed.map(x => Math.round(x.w * 100)), sumW = W.reduce((a, b) => a + b, 0);
+    const gcd = (a, b) => b ? gcd(b, a % b) : a, slots = Math.max(1, Math.min(1000, sumW / W.reduce(gcd)));
+    const cur = W.map(() => 0); this.order = [];
+    for (let k = 0; k < slots; k++) { let b = 0; for (let i = 0; i < W.length; i++) { cur[i] += W[i]; if (cur[i] > cur[b]) b = i; } cur[b] -= sumW; this.order.push(b); }
+    this.oIdx = 0;
     const enc = a.enc;
     const PDU = smpp.PDU;
     // Long text goes as a single submit_sm with message_payload (in a load test, one PDU = one message)
@@ -127,7 +139,6 @@ class LoadEngine extends EventEmitter {
       }
       return { buf, xs, tagOff, ucs2: enc === 'ucs2' };
     });
-    this.tIdx = 0;
   }
 
   _openSession(i) {
@@ -218,11 +229,13 @@ class LoadEngine extends EventEmitter {
   }
 
   _send(st) {
-    const tp = this.templates[this.tIdx]; this.tIdx = (this.tIdx + 1) % this.templates.length;
+    const ti = this.order[this.oIdx]; this.oIdx = (this.oIdx + 1) % this.order.length;
+    const tp = this.templates[ti];
     const b = Buffer.from(tp.buf);
     for (const o of tp.xs) b[o] = 48 + ((Math.random() * 10) | 0);
     if (tp.tagOff > 0) {
-      const digits = String(Date.now()).padStart(13, '0') + String(this.e2eCounter++ % 1e7).padStart(7, '0');
+      const ctr = this.t.clientTag ? this.t.clientTag * 1e6 + this.e2eCounter++ % 1e6 : this.e2eCounter++ % 1e7;
+      const digits = String(Date.now()).padStart(13, '0') + String(ctr).padStart(7, '0');
       if (tp.ucs2) for (let i = 0; i < 20; i++) b[tp.tagOff + i * 2 + 1] = digits.charCodeAt(i);
       else b.write(digits, tp.tagOff, 'latin1');
     }
@@ -230,7 +243,7 @@ class LoadEngine extends EventEmitter {
     b.writeUInt32BE(seq, 12);
     const t0 = now();
     st.inflight++; st.sent.set(seq, t0);
-    st.s._callbacks[seq] = pdu => this._onResp(st, seq, t0, pdu);
+    st.s._callbacks[seq] = pdu => this._onResp(st, seq, t0, pdu, ti);
     st.out.push(b);
     this.G.sent++; this.S.sent++;
   }
@@ -241,7 +254,7 @@ class LoadEngine extends EventEmitter {
     st.out = [];
   }
 
-  _onResp(st, seq, t0, pdu) {
+  _onResp(st, seq, t0, pdu, ti) {
     if (!st.sent.delete(seq)) return; // already counted as a timeout
     st.inflight--;
     const lat = now() - t0;
@@ -249,6 +262,7 @@ class LoadEngine extends EventEmitter {
     const cs = pdu.command_status;
     if (cs === 0) {
       this.G.ok++; this.S.ok++;
+      const d = this.dsts[ti]; this.G.okByDst[d] = (this.G.okByDst[d] || 0) + 1;
       if (this.t.dlr && pdu.message_id) {
         // The DLR may arrive before submit_sm_resp (happens on queue-based platforms)
         const early = this.earlyDlr.get(pdu.message_id);
@@ -293,7 +307,7 @@ class LoadEngine extends EventEmitter {
       if (alt) { t0 = this.pendingDlr.get(alt); id = alt; }
     }
     if (t0 !== undefined) { this.pendingDlr.delete(id); const l = now() - t0; this.S.dlrLat.add(l); this.dlrAll.add(l); }
-    else if (id) { this.earlyDlr.set(id, now()); if (this.earlyDlr.size > 500000) { const k = this.earlyDlr.keys().next().value; this.earlyDlr.delete(k); this.G.dlrUnmatched++; } }
+    else if (id) { this.earlyDlr.set(id, now()); if (this.earlyDlr.size > 500000) { const k = this.earlyDlr.keys().next().value; this.earlyDlr.delete(k); this.G.dlrUnmatched++; this._unmatched(k); } }
     else this.G.dlrUnmatched++;
   }
 
@@ -307,7 +321,7 @@ class LoadEngine extends EventEmitter {
       this.G.errs['TIMEOUT'] = (this.G.errs['TIMEOUT'] || 0) + 1;
     }
     // Early DLRs whose submit_sm_resp never arrived within 30 s count as unmatched
-    for (const [k, at] of this.earlyDlr) { if (t - at < 30000) break; this.earlyDlr.delete(k); this.G.dlrUnmatched++; }
+    for (const [k, at] of this.earlyDlr) { if (t - at < 30000) break; this.earlyDlr.delete(k); this.G.dlrUnmatched++; this._unmatched(k); }
     const dt = (t - this.secT) / 1000; this.secT = t;
     const S = this.S, l = S.lat.summary(), d = S.dlrLat.summary();
     const el = t - this.t0;
@@ -325,7 +339,9 @@ class LoadEngine extends EventEmitter {
     this._windowCheck(row, l);
     this.S = this._emptySec();
     this.emit('tick', { row, totals: this._totals() });
-    if (this.drainUntil && (t >= this.drainUntil || (row.inflight === 0 && (!this.t.dlr || this.G.dlr >= this.G.ok)))) this._finish();
+    // Routing test: count only DLRs matched to this client's own messages (others may be another client's, sent here by mistake)
+    const dlrIn = this.t.clientTag ? this.G.ok - this.pendingDlr.size : this.G.dlr;
+    if (this.drainUntil && (t >= this.drainUntil || (row.inflight === 0 && (!this.t.dlr || dlrIn >= this.G.ok)))) this._finish();
   }
 
   // Sending held back by the window: below the target while every session had `window` submit_sm waiting for a
@@ -350,6 +366,8 @@ class LoadEngine extends EventEmitter {
     else if (!gw) this._event('window', "Check that the gateway account's window allows {need} per session as well.", p);
   }
 
+  _unmatched(id) { if (this.unmatchedIds.length < 100000) this.unmatchedIds.push(id); }
+
   _totals() {
     const end = this.sendEnd || now(), secs = (end - this.t0) / 1000;
     const bound = this.sessions.filter(s => s.bound).length;
@@ -371,12 +389,15 @@ class LoadEngine extends EventEmitter {
 
   _finish() {
     clearInterval(this.secTimer); this.secTimer = null;
-    this.G.dlrUnmatched += this.earlyDlr.size; this.earlyDlr.clear();
+    this.G.dlrUnmatched += this.earlyDlr.size; for (const k of this.earlyDlr.keys()) this._unmatched(k); this.earlyDlr.clear();
     const totals = this._totals();
+    // Routing test: ids of DLRs nobody here sent, and of messages still waiting for a DLR, so the test can tell
+    // whether a DLR went to the wrong client
+    const ids = this.t.clientTag ? { unmatched: this.unmatchedIds, pending: [...this.pendingDlr.keys()].slice(0, 300000) } : undefined;
     this._closeAll();
     this.running = false; this.drainUntil = null; this.sendEnd = null;
     this._event('done', 'Test finished');
-    this.emit('done', { totals, series: this.series, events: this.events, startedAt: this.startedAt, endedAt: Date.now(),
+    this.emit('done', { totals, ids, series: this.series, events: this.events, startedAt: this.startedAt, endedAt: Date.now(),
       test: { ...this.t, respTimeout: this.t.respTimeout / 1000, dlrWait: this.t.dlrWait / 1000 } });
     this.emit('phase', { phase: 'done', ...msg('Done') });
   }

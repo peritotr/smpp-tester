@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.0
+
+- **Routing test**, a new tab: up to 4 vendors and 4 clients at once, to test prefix routing.
+  - Each vendor has its own port, system_id, the prefixes it should get, and its own behaviour (response delay, DLR delay, failed DLRs, TPS limit)
+  - Each client is a separate customer account with its own sessions, window, TPS and a weighted prefix mix (`9053XXXXXXXX:70, 9054XXXXXXXX:30`); a saved profile can fill in its server and login
+  - The client's number travels in the end-to-end marker, so each vendor counts messages per client and prefix
+  - Report: client × prefix × vendor table with counts and end-to-end p95; misrouted messages with examples; lost and duplicate messages; DLRs that went to another customer than the sender; rate per client and per vendor; CSV, JSON and PDF
+- Load test: recipients can be weighted (`number:weight`); without weights they take turns as before
+- `tools/mini-router.js`: a small prefix router for trying the routing test without a platform, with optional misroutes, lost messages and wrong-customer DLRs
+
 ## 1.8.0
 
 - **Window advice.** The client cannot send faster than sessions × window ÷ response time. One field test sent 9,500 TPS for a 10,000 target: 12 sessions × window 100 at 125 ms is 9,600. Now:

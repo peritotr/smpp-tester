@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('api', {
   loadStart: (cfg, test) => ipcRenderer.invoke('load:start', cfg, test),
   loadStop: () => ipcRenderer.invoke('load:stop'),
   loadKill: () => ipcRenderer.invoke('load:kill'),
+  routingStart: spec => ipcRenderer.invoke('routing:start', spec),
+  routingStop: () => ipcRenderer.invoke('routing:stop'),
   mockStart: o => ipcRenderer.invoke('mock:start', o),
   mockStop: () => ipcRenderer.invoke('mock:stop'),
   mockReset: () => ipcRenderer.invoke('mock:reset'),

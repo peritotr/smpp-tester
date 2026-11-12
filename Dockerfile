@@ -20,7 +20,7 @@ RUN apk add --no-cache su-exec
 # Only runtime dependencies (Electron and other desktop build tools are devDependencies)
 COPY --from=deps /app/node_modules ./node_modules
 
-COPY server.js smpp-core.js load-engine.js load-worker.js mock-smsc.js mock-worker.js sms-decode.js dlr-journal.js dlr-journal-worker.js dlr-sched.js ipc-child.js hist.js reports.js ./
+COPY server.js smpp-core.js load-engine.js load-worker.js mock-smsc.js mock-worker.js sms-decode.js dlr-journal.js dlr-journal-worker.js dlr-sched.js routing-run.js ipc-child.js hist.js reports.js ./
 COPY ui ./ui
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 

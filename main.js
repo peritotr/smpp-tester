@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const { SmppClient, analyze } = require('./smpp-core');
 const { ReportStore, assembleReport } = require('./reports');
+const { RoutingRun } = require('./routing-run');
 let reports = null;
 const getReports = () => reports || (reports = new ReportStore(path.join(app.getPath('userData'), 'reports')));
 
@@ -64,6 +65,25 @@ function startMock(opts) {
     p.on('spawn', () => p.postMessage({ type: 'start', opts }));
   });
 }
+
+// Routing test: several vendors and clients at once (see routing-run.js). Messages wait until the process is up.
+const routing = new RoutingRun((file, onMsg) => {
+  const p = utilityProcess.fork(path.join(__dirname, file), [], { serviceName: file.replace('.js', ''), stdio: 'ignore' });
+  let up = false; const q = [];
+  p.on('spawn', () => { up = true; while (q.length) p.postMessage(q.shift()); });
+  p.on('message', onMsg);
+  return { post: m => up ? p.postMessage(m) : q.push(m), kill: () => p.kill(), onExit: f => p.on('exit', f) };
+});
+routing.on('phase', m => send('routing:phase', m));
+routing.on('tick', m => send('routing:tick', m));
+for (const ev of ['log', 'vlog', 'clog']) routing.on(ev, m => send('routing:' + ev, m));
+routing.on('done', rep => {
+  let entry = null;
+  if (rep) try { entry = getReports().save(rep); send('report:saved', entry); } catch (e) { send('routing:log', { text: 'Could not save the report: ' + e.message }); }
+  send('routing:done', { reportId: entry && entry.id, totals: rep && rep.totals, verdict: rep && rep.verdict });
+});
+ipcMain.handle('routing:start', async (_, spec) => { try { await routing.start(spec); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } });
+ipcMain.handle('routing:stop', () => { routing.stop(); return { ok: true }; });
 
 function createWindow() {
   win = new BrowserWindow({
@@ -156,6 +176,7 @@ app.on('window-all-closed', () => {
   client.disconnect();
   if (mockProc) mockProc.kill();
   if (loadProc) loadProc.kill();
+  routing._cleanup();
   app.quit();
 });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

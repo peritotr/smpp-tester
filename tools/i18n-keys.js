@@ -9,13 +9,13 @@ const unq = s => s.replace(/\\'/g, "'").replace(/\\"/g, '"');
 
 // JS: t('…'), I18N.t('…'), msg('…'), err('…'), key: '…', label: '…' (single-quoted literals only)
 const jsFiles = ['ui/renderer.js', 'ui/load.js', 'ui/reports-ui.js', 'ui/vendor-msgs.js', 'ui/report.js', 'ui/analysis.js', 'ui/web-api.js',
-  'load-engine.js', 'mock-smsc.js', 'smpp-core.js', 'server.js', 'main.js'];
-const jsRe = [/\b(?:t|I18N\.t|msg|err|setPhase)\(\s*'((?:[^'\\]|\\.)*)'/g, /\b(?:t|I18N\.t)\(\s*\"((?:[^\"\\]|\\.)*)\"/g, /\b_event\(\s*'\w+',\s*'((?:[^'\\]|\\.)*)'/g, /\b(?:key|infoKey|label):\s*'((?:[^'\\]|\\.)*)'/g, /[{,]\s*error:\s*'((?:[^'\\]|\\.)*)'/g];
+  'ui/routing.js', 'ui/routing-report.js', 'load-engine.js', 'mock-smsc.js', 'smpp-core.js', 'server.js', 'main.js', 'routing-run.js'];
+const jsRe = [/\b(?:t|I18N\.t|msg|err|setPhase|phase)\(\s*'((?:[^'\\]|\\.)*)'/g, /\b(?:t|I18N\.t)\(\s*\"((?:[^\"\\]|\\.)*)\"/g, /\b_event\(\s*'\w+',\s*'((?:[^'\\]|\\.)*)'/g, /\b_(?:phase|log)\(\s*(?:'\w+',\s*)?'((?:[^'\\]|\\.)*\s(?:[^'\\]|\\.)*)'/g, /\b(?:key|infoKey|label):\s*'((?:[^'\\]|\\.)*)'/g, /[{,]\s*error:\s*'((?:[^'\\]|\\.)*)'/g];
 for (const f of jsFiles) {
   const src = fs.readFileSync(path.join(root, f), 'utf8');
   for (const re of jsRe) for (const m of src.matchAll(re)) add(unq(m[1]));
   // Lookup tables whose values are passed through t(): STATE_TXT, STEP_STATUS, CAUSE
-  for (const tbl of src.matchAll(/(?:STATE_TXT|STEP_STATUS|CAUSE) = \{([\s\S]*?)\};/g)) for (const m of tbl[1].matchAll(/:\s*'((?:[^'\\]|\\.)*)'/g)) add(unq(m[1]));
+  for (const tbl of src.matchAll(/(?:STATE_TXT|STEP_STATUS|CAUSE|PH) = \{([\s\S]*?)\};/g)) for (const m of tbl[1].matchAll(/:\s*'((?:[^'\\]|\\.)*)'/g)) add(unq(m[1]));
 }
 // HTML: elements with data-i18n, and data-i18n-attr attribute values
 for (const f of ['ui/index.html', 'ui/report.html']) {

@@ -18,6 +18,13 @@ class ReportStore {
     this._writeIdx(list); return list;
   }
   _entry(rep) {
+    if (rep.kind === 'routing') {
+      const C = rep.clients || [], T = rep.totals || {};
+      return { id: rep.id, name: rep.name || '', createdAt: rep.createdAt, mode: 'routing', host: [...new Set(C.map(c => c.host))].join(', '),
+        target: C.reduce((a, c) => a + (c.tps || 0), 0), capacity: C.reduce((a, c) => a + ((c.totals && (c.totals.steadyTps ?? c.totals.avgTps)) || 0), 0),
+        p95: Math.max(0, ...C.map(c => (c.totals && c.totals.lat && c.totals.lat.p95) || 0)) || null, sent: T.sent, verdict: rep.verdict, issues: rep.issues || 0,
+        secs: rep.test && rep.test.duration };
+    }
     let s = {}; try { s = summary(rep); } catch {}
     return { id: rep.id, name: rep.name || '', createdAt: rep.createdAt, host: rep.cfg && rep.cfg.host, target: rep.test && rep.test.tps,
       mode: rep.test && rep.test.steps ? 'step' : 'constant', secs: rep.totals && rep.totals.secs, ...s };
