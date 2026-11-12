@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('api', {
   loadKill: () => ipcRenderer.invoke('load:kill'),
   routingStart: spec => ipcRenderer.invoke('routing:start', spec),
   routingStop: () => ipcRenderer.invoke('routing:stop'),
+  routingVendorsStart: spec => ipcRenderer.invoke('routing:vendorsStart', spec),
+  routingVendorsStop: () => ipcRenderer.invoke('routing:vendorsStop'),
   mockStart: o => ipcRenderer.invoke('mock:start', o),
   mockStop: () => ipcRenderer.invoke('mock:stop'),
   mockReset: () => ipcRenderer.invoke('mock:reset'),

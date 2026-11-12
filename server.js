@@ -173,6 +173,8 @@ state.routing = { phase: 'idle' }; let routingTick = null;
 routing.on('phase', m => { state.routing = { ...m, reportId: m.phase === 'starting' ? null : state.routing.reportId }; broadcast('routing:phase', state.routing); });
 routing.on('tick', m => { routingTick = m; broadcast('routing:tick', m); });
 for (const ev of ['log', 'vlog', 'clog']) routing.on(ev, m => broadcast('routing:' + ev, m));
+let routingVendors = { up: false, list: [] };
+routing.on('vendors', m => { routingVendors = m; broadcast('routing:vendors', m); });
 routing.on('done', rep => {
   let entry = null;
   if (rep) try { entry = reports.save(rep); broadcast('report:saved', entry); } catch (e) { console.error('Could not save the report:', e.message); }
@@ -180,7 +182,7 @@ routing.on('done', rep => {
   broadcast('routing:done', { reportId: entry && entry.id, totals: rep && rep.totals, verdict: rep && rep.verdict });
 });
 
-function publicState(full) { return { smpp: state.smpp, mock: state.mock, load: full ? { ...state.load, series: loadSeries, totals: loadTotals } : state.load, routing: { ...state.routing, tick: routingTick }, server: true }; }
+function publicState(full) { return { smpp: state.smpp, mock: state.mock, load: full ? { ...state.load, series: loadSeries, totals: loadTotals } : state.load, routing: { ...state.routing, tick: routingTick, vendors: routingVendors }, server: true }; }
 
 // ---------- Profiles ----------
 const profilesFile = path.join(DATA_DIR, 'profiles.json');
@@ -229,6 +231,8 @@ const handlers = {
     try { routingTick = null; await routing.start(spec); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; }
   },
   'routing:stop': () => { routing.stop(); return { ok: true }; },
+  'routing:vendorsStart': async spec => { try { return { ok: true, list: await routing.startVendors(spec || {}) }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } },
+  'routing:vendorsStop': () => { try { routing.stopVendors(); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } },
   'load:kill': () => { if (loadProc) loadProc.kill(); return { ok: true }; },
   'mock:start': o => startMock(o || {}),
   'mock:stop': () => {
@@ -335,6 +339,7 @@ function shutdown() {
   try { client.disconnect(); } catch {}
   if (mockProc) mockProc.kill();
   if (loadProc) loadProc.kill();
+  routing.shutdown();
   server.close(); setTimeout(() => process.exit(0), 1500);
 }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);

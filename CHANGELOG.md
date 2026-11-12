@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.1
+
+- Routing test: **Start vendors** starts the vendors on their own, so the platform can bind to them before the test; they stay up between tests (counters start from zero each test). Each vendor shows whether the platform is bound
+- A test waits up to 30 s for the platform to bind to every vendor before the clients send (before, the vendors only listened while a test ran, so a platform could not connect ahead of it)
+- Vendors log a rejected bind with the system_id and address it came from (wrong system_id or password)
+
 ## 1.9.0
 
 - **Routing test**, a new tab: up to 4 vendors and 4 clients at once, to test prefix routing.

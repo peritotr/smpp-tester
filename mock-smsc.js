@@ -20,6 +20,10 @@ const KEEP = 1000; // incoming messages kept for the "Vendor messages" list
 const TAG = /#T(\d{13})(\d{7})/;
 // Numbers and prefixes compared as digits only, without a leading 00 or +: "+90 532…", "0090532…" and "90532…" match
 const normNum = v => String(v || '').replace(/\D/g, '').replace(/^00/, '');
+const routingOpts = r => r ? {
+  prefixes: [...new Set((r.prefixes || []).map(normNum).filter(Boolean))].sort((a, b) => b.length - a.length),
+  expect: new Set((r.expect || []).map(normNum).filter(Boolean)),
+} : null;
 const fill = (s, p) => p ? s.replace(/\{(\w+)\}/g, (m, k) => p[k] !== undefined ? p[k] : m) : s;
 const msg = (key, p) => ({ key, p, text: fill(key, p) });
 
@@ -81,6 +85,8 @@ class MockSmsc extends EventEmitter {
   // Last KEEP submit_sm kept raw (cheap at high TPS); decoded only when the list is asked for
   clearMsgs() { this.msgs = new Array(KEEP); this.msgHead = 0; this.msgTotal = 0; this.encCount = {}; }
 
+  // Routing test: new prefixes for a vendor that stays up between tests
+  setRouting(r) { this.o.routing = routingOpts(r); this.rt = new Map(); this.rtMis = 0; this.rtSamples = []; }
   resetE2e() { this.e2e = { n: 0, dup: 0, hist: new Hist(), sec: new Hist(), seen: new Set() }; this.rt = new Map(); this.rtMis = 0; this.rtSamples = []; }
 
   start(opts = {}) {
@@ -125,10 +131,7 @@ class MockSmsc extends EventEmitter {
       metricsIntervalMs: Math.max(1000, num(opts.metricsIntervalMs, 5000)),
       // Routing test: the prefixes in play (longest match wins) and the ones this vendor should receive.
       // Messages are counted per client (from the end-to-end marker) × prefix; a prefix not expected here is a misroute.
-      routing: opts.routing ? {
-        prefixes: [...new Set((opts.routing.prefixes || []).map(normNum).filter(Boolean))].sort((a, b) => b.length - a.length),
-        expect: new Set((opts.routing.expect || []).map(normNum).filter(Boolean)),
-      } : null,
+      routing: routingOpts(opts.routing),
     };
     this.o.dlrDelaySample = delaySampler(this.o.dlrDelayMode, this.o.dlrDelay, this.o.dlrDelaySpread);
     this.idPrefix = idPrefix(); this.idc = 0; // fresh, never-seen ids after every (re)start
@@ -221,8 +224,13 @@ class MockSmsc extends EventEmitter {
         if (this.o.maxBinds && [...this.conns].filter(x => x.bound).length >= this.o.maxBinds) return;
         const ok = !this.o.systemId || (sid === this.o.systemId && pw === this.o.password);
         this._write(c, respWithCstr(cmd, ok ? ST.OK : ST.RBINDFAIL, seq, 'MOCKSMSC'));
-        if (ok) { c.bound = true; c.rx = cmd !== CMD.bind_transmitter; c.sid = sid; this.stats.binds++; }
-        else setTimeout(() => c.sock.end(), 50);
+        const ip = String(c.sock.remoteAddress || '').replace(/^::ffff:/, '');
+        if (ok) { c.bound = true; c.rx = cmd !== CMD.bind_transmitter; c.sid = sid; this.stats.binds++; if (this.o.routing) this.emit('log', msg('Bound: system_id {sid} from {ip}', { sid, ip })); }
+        else {
+          setTimeout(() => c.sock.end(), 50);
+          // A wrong login is the usual reason a platform cannot connect: say so, at most every 5 s
+          const now = Date.now(); if (!this.lastBindFail || now - this.lastBindFail > 5000) { this.lastBindFail = now; this.emit('log', msg('Bind rejected: system_id "{sid}" from {ip} (wrong system_id or password)', { sid, ip })); }
+        }
         return;
       }
       case CMD.enquire_link: return this._write(c, emptyResp(cmd, 0, seq));

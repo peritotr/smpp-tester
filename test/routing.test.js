@@ -50,3 +50,32 @@ test('faults are found and counted: misroutes, lost messages, DLRs at the wrong 
   assert.ok(rep.totals.misroute > 0 && rep.totals.lost > 0 && rep.totals.wrongDlr > 0);
   assert.ok(rep.vendors.some(v => v.samples.length));
 });
+
+test('vendors started ahead stay up between tests; a wrong vendor login is reported', async () => {
+  const rp = freePort(), va = freePort(), vb = freePort();
+  const r = new RoutingRun(spawn);
+  const vlog = []; r.on('vlog', m => vlog.push(m.msg.key));
+  const V = [{ name: 'A', port: va, systemId: 'vendA', password: 'pw', prefixes: '9053', dlrDelay: 50 }, { name: 'B', port: vb, systemId: 'vendB', password: 'pw', prefixes: '9054', dlrDelay: 50 }];
+  await r.startVendors({ vendors: V });
+  assert.equal(r.vendorsUp, true);
+  // A platform with the wrong password for B first, then the right one
+  const bad = miniRouter({ port: freePort(), routes: [{ prefix: '9054', to: `127.0.0.1:${vb}:vendB:nope` }] });
+  await new Promise(res => setTimeout(res, 800)); bad.close();
+  assert.ok(vlog.some(k => /^Bind rejected/.test(k)), vlog.join(' | '));
+  const router = miniRouter({ port: rp, routes: [{ prefix: '9053', to: `127.0.0.1:${va}:vendA:pw` }, { prefix: '9054', to: `127.0.0.1:${vb}:vendB:pw` }] });
+  await router.ready;
+  const procs = r.vendors.map(v => v.proc);
+  const spec = { vendors: V, duration: 2, ramp: 0, dlr: true, dlrWait: 3, respTimeout: 5, text: 'Routing',
+    clients: [{ name: 'C1', host: '127.0.0.1', port: rp, systemId: 'c1', sessions: 1, window: 50, tps: 200, dst: '9053XXXXXXXX, 9054XXXXXXXX' }] };
+  for (let k = 0; k < 2; k++) {
+    const done = new Promise(res => r.once('done', res));
+    await r.start(spec);
+    const rep = await done;
+    assert.equal(rep.verdict, 'pass', JSON.stringify(rep.totals));
+    assert.ok(rep.totals.received > 300 && rep.totals.received < 500, `counters start from zero each test: ${rep.totals.received}`);
+  }
+  assert.equal(r.vendorsUp, true, 'still up after the tests');
+  assert.deepEqual(r.vendors.map(v => v.proc), procs, 'same vendor processes: the platform stayed bound');
+  r.stopVendors(); router.close();
+  assert.equal(r.vendorsUp, false);
+});

@@ -6,6 +6,7 @@ const send = require('./ipc-child')(m => {
     if (m.type === 'start') mock.start({ metricsLog: true, ...m.opts }); // one metrics line every 5 s on stdout (docker logs)
     else if (m.type === 'stop') { mock.stop(); send({ type: 'stopped' }); }
     else if (m.type === 'reset') mock.resetE2e();
+    else if (m.type === 'routing') mock.setRouting(m.routing);
     else if (m.type === 'mo') send({ type: 'mo', n: mock.sendMo(m.text, m.from, m.to) });
     else if (m.type === 'msgs') send({ type: 'msgs', rid: m.rid, data: mock.listMsgs(m.q, m.limit) });
     else if (m.type === 'msgsClear') mock.clearMsgs();

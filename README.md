@@ -181,7 +181,8 @@ Client 2 (customer 2) ─┘   (prefix routing)    └─▶ Vendor B  port 2782
 1. On your platform, add Vendor A and Vendor B as suppliers (the tab shows the IP, port and system_id to use) and route 9053 to A and 9054 to B.
 2. Create two test customers with a TPS limit above what you will send.
 3. In the tab, set each client's server, system_id and password (or pick a saved profile) and its prefix mix, e.g. `9053XXXXXXXX:70, 9054XXXXXXXX:30` for client 1 and the other way round for client 2.
-4. Start. All vendors start first, then all clients together.
+4. Press **Start vendors** and wait until each vendor shows *bound*: your platform has to connect to them before any traffic. If a vendor stays at *waiting for bind*, the log under the tables says why when the platform reaches it (e.g. *Bind rejected: wrong system_id or password*); if nothing shows up, the platform cannot reach the port (firewall). The vendors stay up between tests until you stop them.
+5. **Start test**. If the vendors are not up yet, the test starts them and waits up to 30 s for the platform to bind before the clients send.
 
 How it is measured: each message carries the end-to-end marker with the client's number. Each vendor counts what it gets per client and prefix; a prefix it is not listed for counts as **misrouted**. A message accepted by the platform but seen at no vendor is **lost**; one seen twice is a **duplicate**. At the end, every DLR a client could not match is looked up in the other clients' sent messages: a hit is a **DLR at the wrong client**. The test passes when all four are zero.
 
