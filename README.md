@@ -146,8 +146,19 @@ Without Docker: `npm install --omit=dev && UI_PASSWORD=... node server.js`.
 
 ### Choosing sessions and window
 
-A session can carry roughly `window ÷ response time` messages per second. Size the window per session to at least
-`2 × target TPS × response time (s) ÷ sessions` — for 10,000 TPS at 50 ms with 8 sessions that is about 125. If the *In flight* counter sits at `sessions × window`, the window is full: that means the platform is responding slowly, and a bigger window only makes the queue longer.
+The client can never send faster than `sessions × window ÷ response time`: every session holds at most *window* submit_sm waiting for a response. With 12 sessions, window 100 and 125 ms responses that is 9,600 TPS, whatever the target. So size the window per session to at least
+
+`target TPS × response p95 (s) ÷ sessions`, plus some headroom
+
+for 10,000 TPS at 120 ms with 12 sessions that is 100, so use 150–200; for 20,000 TPS at 160 ms it is 267, so use 400. The platform's account must allow that window too: if the gateway caps the account at 200 per session, a client window of 400 does not help.
+
+The load test helps with this:
+
+- Under the settings, a line shows the window limit for the current sessions, window and target, using the last test's response p95 (150 ms before the first test), and the window needed for the target. Enter the gateway account's per-session limit in **Gateway window** (0 = unknown) and the line also says when that has to be raised.
+- During a test, if sending stays below the target for 3 seconds while every session has a full window (and no throttle responses), an event says so with the window needed: `target × p95 ÷ sessions + 20%`, from the measured p95. If that is above the gateway window, it says *raise the gateway account's window setting too*. The report repeats it as a finding; the CSV export has the advice and a `window_full` column per second (share of the second with every session full).
+- **Average after ramp-up** is the rate from the end of the ramp-up to the end of sending. The average including the ramp-up is shown next to it, in the report and in the CSV.
+
+If *In flight* sits at `sessions × window` while response times are rising, the platform is slowing down; then a bigger window only makes its queue longer.
 
 ## Built-in vendor under load
 

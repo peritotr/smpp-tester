@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.8.0
+
+- **Window advice.** The client cannot send faster than sessions × window ÷ response time. One field test sent 9,500 TPS for a 10,000 target: 12 sessions × window 100 at 125 ms is 9,600. Now:
+  - New setting *Gateway window*: the gateway account's per-session window limit (0 = unknown)
+  - Under the settings, a line shows the window limit and the window needed for the target, from the last test's response p95. It warns when the window or the gateway account's window has to be raised
+  - During a test, sending below the target for 3 s while every session has a full window gives an event with the needed window (target × p95 ÷ sessions + 20%). If that is above the gateway window, it says to raise the gateway account's window setting too. Also a report finding, and in the CSV
+  - A start event when the client window is above the gateway window
+- **Average after ramp-up**: the average TPS now leaves out the ramp-up. The average including it is still shown, in the report and in the CSV. Before, the ramp-up lowered the average (5 s of ramp-up in a 60 s test: about −4%)
+- CSV: `window_full` per second
+- Measured on 2 vCPU, 12 sessions, ~123 ms responses, DLRs on: 10,000 TPS with window 200 or 400 → 10,000/s; 20,000 TPS with window 400 → 19,975/s (client CPU 36%); 20,000 TPS with window 200 → 18,870/s, flagged with a needed window of 270
+
 ## 1.7.0
 
 - **Built-in vendor under gateway load**: built to take 6,000–8,000 TPS from a gateway like a real vendor. See "Built-in vendor under load" in the README

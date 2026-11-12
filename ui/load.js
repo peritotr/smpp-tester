@@ -1,5 +1,5 @@
 // Load test view (uses $, val, setVal, esc, t, tm and CONN_FIELDS from renderer.js)
-const LOAD_FIELDS = ['lSrc','lSrcTon','lSrcNpi','lDst','lDstTon','lDstNpi','lText','lEncoding','lSessions','lWindow','lTps','lMode','lAmount','lRamp','lRespTimeout','lDlrWait','lDlr','lRetry','lE2e','lName','lStepStart','lStepInc','lStepDur','cP95','cP99','cE2e','cErr','cLoss','cMinTps'];
+const LOAD_FIELDS = ['lSrc','lSrcTon','lSrcNpi','lDst','lDstTon','lDstNpi','lText','lEncoding','lSessions','lWindow','lGwWindow','lTps','lMode','lAmount','lRamp','lRespTimeout','lDlrWait','lDlr','lRetry','lE2e','lName','lStepStart','lStepInc','lStepDur','cP95','cP99','cE2e','cErr','cLoss','cMinTps'];
 const fmt = n => n == null || isNaN(n) ? '—' : Math.round(n).toLocaleString(I18N.locale);
 const fms = n => n == null || isNaN(n) ? '—' : (n < 10 ? n.toFixed(1) : Math.round(n).toString());
 
@@ -28,6 +28,23 @@ function updStepInfo() {
 ['lStepStart','lStepInc','lStepDur','lTps'].forEach(id => $(id).addEventListener('input', updStepInfo));
 $('lMode').addEventListener('change', updAmountLbl);
 
+// Window advice: sending is capped at sessions × window ÷ response time. Uses the last test's response p95 when
+// there is one, else 150 ms; +20% headroom, as in the engine's warning.
+function updWinHint() {
+  const s = Number(val('lSessions')) || 1, w = Number(val('lWindow')) || 1, tps = Number(val('lTps')) || 0, gw = Number(val('lGwWindow')) || 0;
+  const measured = !!(lastTotals && lastTotals.lat && lastTotals.lat.p95 > 0), p95 = measured ? lastTotals.lat.p95 : 150;
+  const cap = s * w / (p95 / 1000), need = Math.ceil(tps * p95 / 1000 / s * 1.2 / 10) * 10;
+  const p = { cap: fmt(cap), ms: Math.round(p95), need: fmt(need), tps: fmt(tps), gw };
+  let txt = measured ? t("Window limit ≈ {cap} TPS at the last test's response p95 ({ms} ms); {tps} TPS needs a window of ≈ {need} per session.", p)
+    : t('Window limit ≈ {cap} TPS if responses take {ms} ms; {tps} TPS needs a window of ≈ {need} per session.', p);
+  let cls = 'winhint muted';
+  if (need > w) { txt += ' ' + t('Raise the window.'); cls = 'winhint warn'; }
+  if (gw && need > gw) { txt += ' ' + t("Above the gateway account's window ({gw}): raise the gateway account's window setting too.", p); cls = 'winhint warn'; }
+  $('lWinHint').textContent = txt; $('lWinHint').className = cls;
+}
+['lSessions','lWindow','lTps','lGwWindow'].forEach(id => $(id).addEventListener('input', updWinHint));
+updWinHint();
+
 // ---------- Start / stop ----------
 $('lStart').onclick = async () => {
   if (!val('host').trim()) { alert(t('Enter the server details on the left first.')); $('host').focus(); return; }
@@ -44,7 +61,7 @@ $('lStart').onclick = async () => {
   lastTotals = null;
   const cfg = {}; CONN_FIELDS.forEach(f => cfg[f] = val(f));
   const test = {
-    sessions: val('lSessions'), window: val('lWindow'), tps: val('lTps'),
+    sessions: val('lSessions'), window: val('lWindow'), gwWindow: val('lGwWindow'), tps: val('lTps'),
     total: val('lMode') === 'total' ? val('lAmount') : 0, duration: val('lMode') === 'duration' ? val('lAmount') : 0,
     steps: val('lMode') === 'steps' ? { start: val('lStepStart'), inc: val('lStepInc'), dur: val('lStepDur') } : null,
     name: val('lName').trim(),
@@ -97,20 +114,21 @@ api.on('load:tick', m => {
 });
 api.on('load:done', m => {
   lastResult = lastResult || {}; lastResult.totals = m.totals; lastTotals = m.totals; series = series.length ? series : m.series;
-  renderTotals(m.totals);
+  renderTotals(m.totals); updWinHint();
   $('kSentTps').textContent = '—'; $('kOkTps').textContent = '—';
   $('lCsv').disabled = false;
   redraw();
 });
 
 function resetKpis() {
-  ['kSentTps','kOkTps','kAvgTps','kLat','kDlrLat'].forEach(id => $(id).textContent = '—');
+  ['kSentTps','kOkTps','kAvgTps','kLat','kDlrLat'].forEach(id => $(id).textContent = '—'); $('kAvgSub').textContent = 'TPS';
   ['kSent','kOk','kErr','kThr','kTo','kInfl','kDlr'].forEach(id => $(id).textContent = '0');
   $('tErrs').innerHTML = '<tr><td class="muted">—</td></tr>'; $('tDlr').innerHTML = '<tr><td class="muted">—</td></tr>';
 }
 function renderTotals(T, r) {
   if (!T) return;
-  $('kAvgTps').textContent = fmt(T.avgTps);
+  $('kAvgTps').textContent = fmt(T.steadyTps ?? T.avgTps);
+  $('kAvgSub').textContent = T.steadyTps != null && Math.abs(T.steadyTps - T.avgTps) >= 1 ? 'TPS · ' + t('incl. ramp-up {n}', { n: fmt(T.avgTps) }) : 'TPS';
   $('kSent').textContent = fmt(T.sent);
   $('kOk').textContent = fmt(T.ok);
   $('kErr').textContent = fmt(T.err);
@@ -203,14 +221,15 @@ $('lCsv').onclick = () => {
     row(['# ' + t('Server'), `${r.cfg?.host}:${r.cfg?.port}`, 'system_id', r.cfg?.systemId]),
     row(['# ' + t('Sessions'), te.sessions, 'Window', te.window, t('Target TPS'), te.tps, t('Duration (s)'), te.duration || '', t('Count'), te.total || '', 'Ramp-up', te.ramp]),
     row(['# ' + t('Sent'), T.sent, t('Accepted'), T.ok, t('Errors'), T.err, 'Throttle', T.throttled, t('Retries'), T.retries, t('Timeouts'), T.timeouts]),
-    row(['# ' + t('Average TPS'), T.avgTps, t('Duration (s)'), T.secs]),
+    row(['# ' + t('Average TPS after ramp-up'), T.steadyTps ?? '', t('Average TPS incl. ramp-up'), T.avgTps, t('Duration (s)'), T.secs, t('Gateway window'), te.gwWindow || '']),
+    ...(T.windowAdvice ? [row(['# ' + t('Window advice'), t('needed per session'), T.windowAdvice.need, t('response p95 ms'), T.windowAdvice.p95, t('gateway window too low'), T.windowAdvice.gwTooLow ? t('Yes') : t('No')])] : []),
     row(['# ' + t('Response ms'), 'p50', l.p50, 'p95', l.p95, 'p99', l.p99, 'max', l.max]),
     row(['# DLR', T.dlr, 'DELIVRD', T.dlrOk, t('other'), T.dlrFail, t('unmatched'), T.dlrUnmatched, 'DLR ms p50', d.p50, 'p95', d.p95]),
     ...(r.e2e ? [row(['# ' + t('End-to-end'), t('reached vendor'), r.e2e.n, t('missing'), Math.max(0, (T.ok || 0) - r.e2e.n), t('duplicates'), r.e2e.dup, 'p50 ms', r.e2e.total?.p50, 'p95', r.e2e.total?.p95, 'p99', r.e2e.total?.p99])] : []),
     row(['# ' + t('Error codes'), Object.entries(T.errs || {}).map(([k, v]) => k + '=' + v).join(' ')]),
     '',
-    ['second', 'sent_tps', 'accepted_tps', 'error_tps', 'throttle_tps', 'dlr_tps', 'inflight', 'rate_factor', 'p50_ms', 'p95_ms', 'p99_ms', 'max_ms', 'dlr_p50_ms', 'dlr_p95_ms', 'e2e_total', 'e2e_p50_ms', 'e2e_p95_ms', 'e2e_p99_ms'].join(sep),
-    ...series.map(s => row([s.t, s.sentTps, s.okTps, s.errTps, s.thrTps, s.dlrTps, s.inflight, s.rate, s.p50, s.p95, s.p99, s.max, s.dlrP50, s.dlrP95, s.e2eN, s.e2eP50, s.e2eP95, s.e2eP99])),
+    ['second', 'sent_tps', 'accepted_tps', 'error_tps', 'throttle_tps', 'dlr_tps', 'inflight', 'window_full', 'rate_factor', 'p50_ms', 'p95_ms', 'p99_ms', 'max_ms', 'dlr_p50_ms', 'dlr_p95_ms', 'e2e_total', 'e2e_p50_ms', 'e2e_p95_ms', 'e2e_p99_ms'].join(sep),
+    ...series.map(s => row([s.t, s.sentTps, s.okTps, s.errTps, s.thrTps, s.dlrTps, s.inflight, s.windowFull, s.rate, s.p50, s.p95, s.p99, s.max, s.dlrP50, s.dlrP95, s.e2eN, s.e2eP50, s.e2eP95, s.e2eP99])),
   ];
   api.saveFile('﻿' + lines.join('\n'), `smpp-load-test-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.csv`);
 };

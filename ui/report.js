@@ -91,6 +91,8 @@
   html += `<div class="grid2">
     <section><h2>${esc(t('Counters'))}</h2><table class="kv"><tbody>
       <tr><td>${esc(t('submit_sm sent'))}</td><td class="n">${N(T.sent)}</td></tr>
+      <tr><td>${esc(t('Average TPS after ramp-up'))}</td><td class="n">${N(T.steadyTps)}</td></tr>
+      <tr><td>${esc(t('Average TPS incl. ramp-up'))}</td><td class="n">${N(T.avgTps)}</td></tr>
       <tr><td>${esc(t('Accepted (ESME_ROK)'))}</td><td class="n">${N(T.ok)}</td></tr>
       <tr><td>${esc(t('Throttle / retried'))}</td><td class="n">${N(T.throttled)} / ${N(T.retries)}</td></tr>
       <tr><td>${esc(t('Timeouts'))}</td><td class="n">${N(T.timeouts)}</td></tr>
@@ -102,12 +104,12 @@
       ${ve ? `<tr><td>${esc(t('Reached vendor'))}</td><td class="n">${N(ve.n)}</td></tr><tr><td>${esc(t('End-to-end p50 / p95 / p99'))}</td><td class="n">${MS(ve.total && ve.total.p50)} / ${MS(ve.total && ve.total.p95)} / ${MS(ve.total && ve.total.p99)} ms</td></tr>` : ''}
     </tbody></table></section>
     <section><h2>${esc(t('Events'))}</h2><table><tbody>
-      ${allEv.map(e => `<tr><td class="mono" style="width:60px">${mmss(e.t)}</td><td class="${['session', 'error', 'timeout', 'sat'].includes(e.type) ? 'err' : ['throttle', 'onset', 'bindfail'].includes(e.type) ? 'warn' : ''}">${esc(e.txt)}</td></tr>`).join('') || `<tr><td class="muted">${esc(t('No events'))}</td></tr>`}
+      ${allEv.map(e => `<tr><td class="mono" style="width:60px">${mmss(e.t)}</td><td class="${['session', 'error', 'timeout', 'sat'].includes(e.type) ? 'err' : ['throttle', 'onset', 'bindfail', 'window'].includes(e.type) ? 'warn' : ''}">${esc(e.txt)}</td></tr>`).join('') || `<tr><td class="muted">${esc(t('No events'))}</td></tr>`}
     </tbody></table></section>
   </div>
   <section><h2>${esc(t('Test settings'))}</h2><div class="grid2"><table class="kv"><tbody>
       <tr><td>${esc(t('Test type'))}</td><td>${esc(steps ? t('Step: {from} → {to} TPS, {n} steps × {s} s', { from: N(test.steps[0]), to: N(test.steps.at(-1)), n: test.steps.length, s: test.stepDur }) : t('Constant: {tps} TPS, {amount}', { tps: N(test.tps), amount: test.total ? t('{n} messages', { n: N(test.total) }) : N(test.duration) + ' s' }))}</td></tr>
-      <tr><td>${esc(t('Sessions × window'))}</td><td>${test.sessions} × ${test.window}</td></tr>
+      <tr><td>${esc(t('Sessions × window'))}</td><td>${test.sessions} × ${test.window}${test.gwWindow ? ' · ' + esc(t('gateway window {n}', { n: test.gwWindow })) : ''}</td></tr>
       <tr><td>Ramp-up</td><td>${test.ramp || 0} s</td></tr>
       <tr><td>${esc(t('Response limit / DLR wait'))}</td><td>${test.respTimeout} s / ${test.dlrWait} s</td></tr>
       <tr><td>${esc(t('Retry on throttle'))}</td><td>${yn(test.retryThrottle)}</td></tr>
