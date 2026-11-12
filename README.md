@@ -186,9 +186,15 @@ Client 2 (customer 2) ─┘   (prefix routing)    └─▶ Vendor B  port 2782
 
 How it is measured: each message carries the end-to-end marker with the client's number. Each vendor counts what it gets per client and prefix; a prefix it is not listed for counts as **misrouted**. A message accepted by the platform but seen at no vendor is **lost**; one seen twice is a **duplicate**. At the end, every DLR a client could not match is looked up in the other clients' sent messages: a hit is a **DLR at the wrong client**. The test passes when all four are zero.
 
+**Content check.** Every message a vendor receives is checked: the marker must be intact (`#T` + 20 digits), the text before it must be exactly the text that was sent, and `data_coding` must be what the clients used. The report counts, per vendor, messages with an intact marker, without a marker, with a broken marker, with changed text and with changed `data_coding`, with examples. Any of these fails the test.
+
+**Evidence CSV.** Each vendor writes one row per message it received: vendor, client, prefix, recipient, sender, the vendor's message_id, the marker, submit and receive time (UTC), end-to-end ms, `data_coding` and the result of each check. Download it from the report (*Content check*) and compare it with your platform's records, for example by the vendor message_id. The files are kept gzipped next to the reports (about 10 MB per million messages) and deleted with the report.
+
+**Failover.** Give each vendor the prefixes it is the backup for (*Backup for*). During a test, *Take down* on a vendor's row drops its binds and closes its port while the others keep running; *Bring up* opens it again. Messages for a prefix at its backup vendor count as failover, not as misrouted. The report has a *Failover* table per outage: when the vendor went down and came back, within how many seconds its prefixes reached another vendor and which one, how many went there, and how soon traffic came back. The rate chart shades the outage.
+
 Limits: 4 vendors and 4 clients. The marker must reach the vendor unchanged (messages without it are reported separately). Everything runs on one machine, so the total rate of all clients shares its CPU; on 2 vCPU stay around 20,000 TPS in total.
 
-`tools/mini-router.js` is a tiny prefix router for trying the tab without a real platform. It can also make mistakes on purpose (`MISROUTE_EVERY`, `WRONG_DLR_EVERY`, `DROP_EVERY`):
+`tools/mini-router.js` is a tiny prefix router for trying the tab without a real platform. It can also make mistakes on purpose (`MISROUTE_EVERY`, `WRONG_DLR_EVERY`, `DROP_EVERY`) and fail over to another vendor when one is down (`FAILOVER=1`):
 
 ```
 node tools/mini-router.js 2790 9053=127.0.0.1:2781:vendA:test 9054=127.0.0.1:2782:vendB:test

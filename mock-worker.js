@@ -7,6 +7,9 @@ const send = require('./ipc-child')(m => {
     else if (m.type === 'stop') { mock.stop(); send({ type: 'stopped' }); }
     else if (m.type === 'reset') mock.resetE2e();
     else if (m.type === 'routing') mock.setRouting(m.routing);
+    else if (m.type === 'suspend') mock.suspend();
+    else if (m.type === 'resume') mock.resume();
+    else if (m.type === 'evidenceClose') mock.evidenceClose().then(r => send({ type: 'evidenceClosed', rid: m.rid, ...(r || {}) }));
     else if (m.type === 'mo') send({ type: 'mo', n: mock.sendMo(m.text, m.from, m.to) });
     else if (m.type === 'msgs') send({ type: 'msgs', rid: m.rid, data: mock.listMsgs(m.q, m.limit) });
     else if (m.type === 'msgsClear') mock.clearMsgs();

@@ -63,6 +63,8 @@
     routingStop: () => invoke('routing:stop'),
     routingVendorsStart: spec => invoke('routing:vendorsStart', spec),
     routingVendorsStop: () => invoke('routing:vendorsStop'),
+    routingVendorDown: i => invoke('routing:vendorDown', i),
+    routingVendorUp: i => invoke('routing:vendorUp', i),
     loadKill: () => invoke('load:kill'),
     mockStart: o => invoke('mock:start', o),
     mockStop: () => invoke('mock:stop'),

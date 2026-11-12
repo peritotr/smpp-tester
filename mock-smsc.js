@@ -15,6 +15,8 @@ const { decodeSm } = require('./sms-decode');
 const crypto = require('crypto');
 const path = require('path');
 const journal = require('./dlr-journal');
+const fs = require('fs');
+const zlib = require('zlib');
 const { MinHeap, delaySampler, backoff, parseCodes, hex } = require('./dlr-sched');
 const KEEP = 1000; // incoming messages kept for the "Vendor messages" list
 const TAG = /#T(\d{13})(\d{7})/;
@@ -23,7 +25,13 @@ const normNum = v => String(v || '').replace(/\D/g, '').replace(/^00/, '');
 const routingOpts = r => r ? {
   prefixes: [...new Set((r.prefixes || []).map(normNum).filter(Boolean))].sort((a, b) => b.length - a.length),
   expect: new Set((r.expect || []).map(normNum).filter(Boolean)),
+  backup: new Set((r.backup || []).map(normNum).filter(Boolean)),   // prefixes this vendor takes over when their vendor is down
+  // What the clients sent: the text before the marker and its data_coding, to check the platform left them alone
+  text: r.text == null ? null : String(r.text), dcs: r.dcs == null ? null : Number(r.dcs),
+  evidence: r.evidence || null, name: r.name || '',
 } : null;
+const csvq = v => { v = String(v ?? ''); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+const iso = ms => new Date(ms).toISOString();
 const fill = (s, p) => p ? s.replace(/\{(\w+)\}/g, (m, k) => p[k] !== undefined ? p[k] : m) : s;
 const msg = (key, p) => ({ key, p, text: fill(key, p) });
 
@@ -86,8 +94,42 @@ class MockSmsc extends EventEmitter {
   clearMsgs() { this.msgs = new Array(KEEP); this.msgHead = 0; this.msgTotal = 0; this.encCount = {}; }
 
   // Routing test: new prefixes for a vendor that stays up between tests
-  setRouting(r) { this.o.routing = routingOpts(r); this.rt = new Map(); this.rtMis = 0; this.rtSamples = []; }
-  resetE2e() { this.e2e = { n: 0, dup: 0, hist: new Hist(), sec: new Hist(), seen: new Set() }; this.rt = new Map(); this.rtMis = 0; this.rtSamples = []; }
+  // Routing test failover: take this vendor down (drop every bind, refuse new connections) and bring it back.
+  // Counters and the evidence file carry on, so the report covers the whole test.
+  suspend() {
+    if (this.suspended || !this.server) return; this.suspended = true;
+    this.server.close(); this.server = null;
+    for (const c of this.conns) try { c.sock.destroy(); } catch {}
+    this.emit('log', msg('Vendor down: all binds dropped, port {port} closed', { port: this.o.port }));
+  }
+  resume() {
+    if (!this.suspended) return; this.suspended = false;
+    this.server = net.createServer(sock => this._onConn(sock));
+    this.server.on('error', e => this.emit('log', { text: 'Server error: ' + e.message }));
+    this.server.listen(this.o.port, this.o.host, () => this.emit('log', msg('Vendor up again on port {port}', { port: this.o.port })));
+  }
+  setRouting(r) { this._evClose(); this.o.routing = routingOpts(r); this._rtReset(); this._evOpen(); }
+  _rtReset() { this.rt = new Map(); this.rtMis = 0; this.rtFo = 0; this.rtSamples = []; this.rc = { marked: 0, unmarked: 0, broken: 0, textChanged: 0, dcsChanged: 0 }; this.rcSamples = []; }
+
+  // Routing test evidence: one CSV row per message this vendor received, gzipped in the background. The file is a
+  // series of gzip members (valid gzip; Node's gunzip reads it whole).
+  _evOpen() {
+    const R = this.o.routing; if (!R || !R.evidence) return;
+    try { fs.mkdirSync(path.dirname(R.evidence), { recursive: true }); fs.writeFileSync(R.evidence, zlib.gzipSync('vendor,client,prefix,destination,source,vendor_message_id,marker,submitted_utc,received_utc,e2e_ms,data_coding,marker_ok,text_ok,data_coding_ok,duplicate\n')); }
+    catch (e) { this.emit('log', { text: 'Evidence file not written: ' + e.message }); return; }
+    this.ev = { file: R.evidence, buf: [], rows: 0, chain: Promise.resolve() };
+    this.evTimer = setInterval(() => this._evFlush(), 1000);
+  }
+  _evFlush() {
+    const ev = this.ev; if (!ev || !ev.buf.length) return ev ? ev.chain : Promise.resolve();
+    const chunk = ev.buf.join(''); ev.buf = [];
+    ev.chain = ev.chain.then(() => new Promise(res => zlib.gzip(chunk, (e, gz) => { if (e) return res(); fs.appendFile(ev.file, gz, () => res()); })));
+    return ev.chain;
+  }
+  // Wait for everything written so far, then stop writing (the report links the file)
+  async evidenceClose() { const ev = this.ev; if (!ev) return null; clearInterval(this.evTimer); await this._evFlush(); this.ev = null; return { file: ev.file, rows: ev.rows }; }
+  _evClose() { const ev = this.ev; if (!ev) return; clearInterval(this.evTimer); if (ev.buf.length) try { fs.appendFileSync(ev.file, zlib.gzipSync(ev.buf.join(''))); } catch {} this.ev = null; }
+  resetE2e() { this.e2e = { n: 0, dup: 0, hist: new Hist(), sec: new Hist(), seen: new Set() }; this._rtReset(); }
 
   start(opts = {}) {
     if (this.server) return;
@@ -155,6 +197,7 @@ class MockSmsc extends EventEmitter {
     this.respQ = []; this.respHead = 0; this.nextFree = 0;
     if (this.o.capacity) this.capTimer = setInterval(() => this._flushResp(), 2);
     this.statTimer = setInterval(() => this._secondStats(), 1000);
+    this._evOpen();
     this.metricsTimer = setInterval(() => this._metricsWindow(), this.o.metricsIntervalMs);
   }
 
@@ -170,7 +213,7 @@ class MockSmsc extends EventEmitter {
       submitRespP99: r.p99 ?? null,
       respQueue: (this.respQ || []).length - (this.respHead || 0),
       e2e: { n: e.n, dup: e.dup, sec: e.sec.summary(), total: e.hist.summary() },
-      routing: this.o.routing ? { misroute: this.rtMis, samples: this.rtSamples, cells: [...this.rt.values()].map(x => ({ client: x.client, prefix: x.prefix, n: x.n, dup: x.dup, mis: x.mis, lat: x.lat.summary() })) } : undefined });
+      routing: this.o.routing ? { misroute: this.rtMis, failover: this.rtFo, samples: this.rtSamples, content: { ...this.rc, samples: this.rcSamples }, evidenceRows: this.ev ? this.ev.rows : null, cells: [...this.rt.values()].map(x => ({ client: x.client, prefix: x.prefix, n: x.n, dup: x.dup, mis: x.mis, fo: x.fo, lat: x.lat.summary() })) } : undefined });
     e.sec = new Hist();
     this.stats.rx = 0; this.stats.throttled = 0; this.stats.dlrSent = 0;
   }
@@ -273,7 +316,7 @@ class MockSmsc extends EventEmitter {
     const reg = body[p] & 0x03;
     const { dcs, sm } = this._sm(body, p);
     const e2 = this._e2e(dcs, sm, now);
-    if (this.o.routing) this._route(c, dst, e2);
+    if (this.o.routing) this._route(c, dst, src, id, dcs, esm, sm, e2, now);
     // Keep a copy for the "Vendor messages" list: what arrived, from which account, in which encoding
     this.msgs[this.msgHead] = { t: now, sid: c.sid || '', src, srcTon, dst, dstTon, esm, dcs, reg, id, sm: Buffer.from(sm) };
     this.msgHead = (this.msgHead + 1) % KEEP; this.msgTotal++;
@@ -321,17 +364,35 @@ class MockSmsc extends EventEmitter {
   }
 
   // Routing test: count the message under client × prefix; a prefix this vendor should not get is a misroute
-  _route(c, dst, e2) {
+  _route(c, dst, src, id, dcs, esm, sm, e2, now) {
     const R = this.o.routing, d = normNum(dst);
     const prefix = R.prefixes.find(p => d.startsWith(p)) || 'other';
     const client = e2 ? e2.client : 0, k = client + '|' + prefix;
     let cell = this.rt.get(k);
-    if (!cell) this.rt.set(k, cell = { client, prefix, n: 0, dup: 0, mis: 0, lat: new Hist() });
+    if (!cell) this.rt.set(k, cell = { client, prefix, n: 0, dup: 0, mis: 0, fo: 0, lat: new Hist() });
+    // Content check: marker intact? text before it and data_coding as sent?
+    const txt = decodeSm(dcs, esm, sm).text || '', rc = this.rc;
+    const mt = TAG.exec(txt), markerOk = !!mt, broken = !mt && txt.includes('#T');
+    const at = mt ? mt.index : broken ? txt.indexOf('#T') : txt.length, body = txt.slice(0, at).replace(/ $/, '');
+    const textOk = R.text == null || body === R.text, dcsOk = R.dcs == null || dcs === R.dcs;
+    if (!(e2 && e2.dup)) {
+      if (markerOk) rc.marked++; else if (broken) rc.broken++; else rc.unmarked++;
+      if (!textOk) rc.textChanged++;
+      if (!dcsOk) rc.dcsChanged++;
+      if ((!markerOk || !textOk || !dcsOk) && this.rcSamples.length < 20)
+        this.rcSamples.push({ t: now, client, dst, kind: !markerOk ? (broken ? 'broken' : 'unmarked') : !textOk ? 'text' : 'dcs', dcs, expectDcs: R.dcs, text: txt.slice(0, 200), expectText: R.text });
+    }
+    if (this.ev) {
+      this.ev.rows++;
+      this.ev.buf.push([R.name, client || '', prefix, dst, src, id, mt ? mt[0].slice(2) : '', mt ? iso(Number(mt[1])) : '', iso(now), e2 && !e2.dup ? Math.round(e2.lat) : '', dcs,
+        markerOk ? 1 : 0, textOk ? 1 : 0, dcsOk ? 1 : 0, e2 && e2.dup ? 1 : 0].map(csvq).join(',') + '\n');
+    }
     if (e2 && e2.dup) { cell.dup++; return; }
     cell.n++; if (e2) cell.lat.add(e2.lat);
-    if (R.expect.size && !R.expect.has(prefix)) {
+    if (R.expect.size && !R.expect.has(prefix) && R.backup.has(prefix)) { cell.fo++; this.rtFo++; }
+    else if (R.expect.size && !R.expect.has(prefix)) {
       cell.mis++; this.rtMis++;
-      if (this.rtSamples.length < 20) this.rtSamples.push({ t: Date.now(), dst, client, sid: c.sid || '' });
+      if (this.rtSamples.length < 20) this.rtSamples.push({ t: now, dst, client, sid: c.sid || '' });
     }
   }
 
@@ -632,6 +693,7 @@ class MockSmsc extends EventEmitter {
   }
 
   stop() {
+    this._evClose();
     clearInterval(this.timer); clearInterval(this.statTimer); clearInterval(this.capTimer); clearInterval(this.metricsTimer);
     this.respQ = []; this.respHead = 0;
     // Pending DLRs are in the journal; whatever was in flight stays there too and is sent again after a restart
