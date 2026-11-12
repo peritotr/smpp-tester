@@ -74,6 +74,7 @@ const routing = new RoutingRun((file, onMsg) => {
   p.on('message', onMsg);
   return { post: m => up ? p.postMessage(m) : q.push(m), kill: () => p.kill(), onExit: f => p.on('exit', f) };
 });
+app.whenReady().then(() => { routing.evidenceDir = getReports().evidenceDir; });
 routing.on('phase', m => send('routing:phase', m));
 routing.on('tick', m => send('routing:tick', m));
 for (const ev of ['log', 'vlog', 'clog']) routing.on(ev, m => send('routing:' + ev, m));
@@ -85,7 +86,17 @@ routing.on('done', rep => {
 });
 ipcMain.handle('routing:start', async (_, spec) => { try { await routing.start(spec); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } });
 ipcMain.handle('routing:stop', () => { routing.stop(); return { ok: true }; });
+// Routing test evidence: save the vendor's gzipped CSV as plain CSV
+ipcMain.handle('evidence:save', async (e, file) => {
+  const f = getReports().evidencePath(file); if (!f || !fs.existsSync(f)) return false;
+  const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), { defaultPath: path.basename(f).replace(/\.gz$/, ''), filters: [{ name: 'CSV', extensions: ['csv'] }] });
+  if (r.canceled || !r.filePath) return false;
+  await require('stream/promises').pipeline(fs.createReadStream(f), require('zlib').createGunzip(), fs.createWriteStream(r.filePath));
+  return r.filePath;
+});
 ipcMain.handle('routing:vendorsStart', async (_, spec) => { try { return { ok: true, list: await routing.startVendors(spec || {}) }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } });
+ipcMain.handle('routing:vendorDown', (_, i) => ({ ok: routing.vendorDown(Number(i)) }));
+ipcMain.handle('routing:vendorUp', (_, i) => ({ ok: routing.vendorUp(Number(i)) }));
 ipcMain.handle('routing:vendorsStop', () => { try { routing.stopVendors(); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } });
 
 function createWindow() {

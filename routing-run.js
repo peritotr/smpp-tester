@@ -7,6 +7,8 @@
 // Shared by the web server and the desktop app. `spawn(file, onMessage)` starts a worker and returns
 // { post(msg), kill(), onExit(fn) }.
 const { EventEmitter } = require('events');
+const path = require('path');
+const { analyze } = require('./smpp-core');
 
 const MAX = 4;
 const normNum = v => String(v || '').replace(/\D/g, '').replace(/^00/, '');
@@ -55,7 +57,25 @@ class RoutingRun extends EventEmitter {
     if (this.running) throw err('A routing test is already running');
     this._killVendors(); this._vtick(false);
   }
-  vendorList() { return (this.vendors || []).map(v => ({ name: v.name, port: Number(v.def.port), systemId: v.def.systemId, conns: v.stats ? v.stats.conns : 0 })); }
+  vendorList() { return (this.vendors || []).map(v => ({ name: v.name, port: Number(v.def.port), systemId: v.def.systemId, conns: v.stats ? v.stats.conns : 0, down: !!v.down })); }
+
+  // Failover test: take one vendor down (binds dropped, port closed) while the others keep running, and bring it back
+  vendorDown(i) {
+    const v = (this.vendors || [])[i]; if (!v || !v.proc || v.down) return false;
+    v.down = true; v.proc.post({ type: 'suspend' });
+    const t = this.running && this.t0 ? (Date.now() - this.t0) / 1000 : null;
+    if (this.running) this.outages.push({ vendor: i, down: t, up: null });
+    this._log('{name} taken down: binds dropped, port {port} closed', { name: v.name, port: v.def.port });
+    this._vtick(!this.running && this.vendorsKeep); return true;
+  }
+  vendorUp(i) {
+    const v = (this.vendors || [])[i]; if (!v || !v.proc || !v.down) return false;
+    v.down = false; v.proc.post({ type: 'resume' });
+    const o = this.running && [...(this.outages || [])].reverse().find(x => x.vendor === i && x.up == null);
+    if (o) o.up = (Date.now() - this.t0) / 1000;
+    this._log('{name} up again on port {port}', { name: v.name, port: v.def.port });
+    this._vtick(!this.running && this.vendorsKeep); return true;
+  }
   _killVendors() { for (const v of this.vendors || []) { try { v.proc && v.proc.kill(); } catch {} v.proc = null; } this.vendors = []; this.vkey = null; this.vendorsKeep = false; }
   // While vendors run without a test: their bind count once a second (the UI shows whether the platform is bound)
   _vtick(on) {
@@ -66,9 +86,16 @@ class RoutingRun extends EventEmitter {
 
   async _startVendors(V, spec, keep) {
     const key = this._vkey(V);
-    const prefixes = [...new Set([...V.flatMap(v => list(v.prefixes).map(normNum)), ...(spec.clients || []).flatMap(c => dstList(c.dst).map(prefixOf))].filter(Boolean))];
-    const routing = v => ({ prefixes, expect: list(v.prefixes).map(normNum).filter(Boolean) });
+    const prefixes = [...new Set([...V.flatMap(v => [...list(v.prefixes), ...list(v.backup)].map(normNum)), ...(spec.clients || []).flatMap(c => dstList(c.dst).map(prefixOf))].filter(Boolean))];
+    // During a test the vendors also check the text and data_coding, and write one evidence row per message
+    const T = spec.clients && spec.clients.length && spec.text != null ? this._expected(spec) : null;
+    const runId = T && this.evidenceDir ? new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-') + '-' + Math.random().toString(36).slice(2, 6) : null;
+    const routing = v => ({ prefixes, expect: list(v.prefixes).map(normNum).filter(Boolean), backup: list(v.backup).map(normNum).filter(Boolean), name: v.name || '', text: T ? T.text : null, dcs: T ? T.dcs : null,
+      evidence: runId ? path.join(this.evidenceDir, `${runId}-${String(v.name || v.systemId).replace(/[^\w.-]+/g, '_')}.csv.gz`) : null });
+    V.forEach((v, i) => { if (!v.name) v.name = 'Vendor ' + String.fromCharCode(65 + i); });
     if (this.vendorsUp && this.vkey === key) {
+      // A vendor left down by a failover test comes back for the new test
+      this.vendors.forEach(v => { if (v.down) { v.down = false; v.proc.post({ type: 'resume' }); } });
       // Reuse: new prefixes, counters back to zero
       this.vendors.forEach((v, k) => { v.def = V[k]; v.expect = routing(V[k]).expect; v.stats = null; v.proc.post({ type: 'routing', routing: routing(V[k]) }); v.proc.post({ type: 'reset' }); });
       if (keep) this.vendorsKeep = true;
@@ -76,7 +103,8 @@ class RoutingRun extends EventEmitter {
     }
     this._killVendors();
     this.vkey = key; this.vendorsKeep = keep;
-    this.vendors = V.map((v, i) => ({ i, def: v, name: v.name || 'Vendor ' + String.fromCharCode(65 + i), expect: routing(v).expect, stats: null, proc: null }));
+    V.forEach((v, i) => { if (!v.name) v.name = 'Vendor ' + String.fromCharCode(65 + i); });
+    this.vendors = V.map((v, i) => ({ i, def: v, name: v.name, expect: routing(v).expect, stats: null, proc: null }));
     try {
       await Promise.all(this.vendors.map(v => new Promise((resolve, reject) => {
         const d = v.def;
@@ -85,6 +113,7 @@ class RoutingRun extends EventEmitter {
           if (m.type === 'started') { clearTimeout(timer); resolve(); }
           else if (m.type === 'error') { clearTimeout(timer); reject(err('{name}: {msg}', { name: v.name, msg: (m.msg && m.msg.text) || m.text })); }
           else if (m.type === 'stats') v.stats = m.stats;
+          else if (m.type === 'evidenceClosed') v.onEvidence && v.onEvidence(m);
           else if (m.type === 'log' && m.msg && /^(Bound|Bind rejected)/.test(m.msg.key || '')) { this.emit('vlog', { vendor: v.name, msg: m.msg }); if (this.running) this.events.push({ t: this.t0 ? Math.round((Date.now() - this.t0) / 100) / 10 : 0, type: 'log', key: '{name}: {msg}', p: { name: v.name, msg: m.msg.text } }); }
         });
         v.proc.post({ type: 'start', opts: {
@@ -104,7 +133,7 @@ class RoutingRun extends EventEmitter {
     this.running = true; this.stopping = false; this.events = []; this.t0 = 0;
     this.spec = spec;
     this.clients = C.map((c, i) => ({ i, tag: i + 1, def: c, name: c.name || 'Client ' + (i + 1), phase: 'idle', row: null, totals: null, done: null, proc: null }));
-    this.vSeries = [];
+    this.vSeries = []; this.outages = []; this.lastCells = null;
     this._phase('starting', 'Starting {v} vendors…', { v: V.length });
 
     // Vendors first, and the platform bound to them, before any traffic
@@ -150,13 +179,38 @@ class RoutingRun extends EventEmitter {
 
   _second() {
     const t = Math.round((Date.now() - this.t0) / 1000);
-    const vrow = { t, rx: this.vendors.map(v => v.stats ? v.stats.rx : 0), mis: this.vendors.map(v => v.stats && v.stats.routing ? v.stats.routing.misroute : 0) };
+    const vrow = { t, rx: this.vendors.map(v => v.stats ? v.stats.rx : 0), mis: this.vendors.map(v => v.stats && v.stats.routing ? v.stats.routing.misroute : 0),
+      down: this.vendors.map(v => v.down ? 1 : 0), byPrefix: this._byPrefix() };
     this.vSeries.push(vrow);
     this.emit('tick', {
       t,
       clients: this.clients.map(c => ({ name: c.name, phase: c.phase, sentTps: c.row ? c.row.sentTps : 0, okTps: c.row ? c.row.okTps : 0, p95: c.row ? c.row.p95 : null,
         thrTps: c.row ? c.row.thrTps : 0, errTps: c.row ? c.row.errTps : 0, inflight: c.row ? c.row.inflight : 0, sent: c.totals ? c.totals.sent : 0, ok: c.totals ? c.totals.ok : 0, dlr: c.totals ? c.totals.dlr : 0 })),
-      vendors: this.vendors.map((v, k) => ({ name: v.name, rx: vrow.rx[k], conns: v.stats ? v.stats.conns : 0, n: v.stats ? v.stats.e2e.n : 0, misroute: vrow.mis[k], e2eP95: v.stats && v.stats.e2e.sec ? v.stats.e2e.sec.p95 : null })),
+      vendors: this.vendors.map((v, k) => ({ name: v.name, down: !!v.down, failover: v.stats && v.stats.routing ? v.stats.routing.failover || 0 : 0, rx: vrow.rx[k], conns: v.stats ? v.stats.conns : 0, n: v.stats ? v.stats.e2e.n : 0, misroute: vrow.mis[k], e2eP95: v.stats && v.stats.e2e.sec ? v.stats.e2e.sec.p95 : null })),
+    });
+  }
+
+  // Messages per vendor and prefix in the last second (from the vendors' cumulative counters)
+  _byPrefix() {
+    const now = this.vendors.map(v => { const o = {}; for (const c of (v.stats && v.stats.routing && v.stats.routing.cells) || []) o[c.prefix] = (o[c.prefix] || 0) + c.n; return o; });
+    const prev = this.lastCells || now.map(() => ({})); this.lastCells = now;
+    return now.map((o, k) => { const d = {}; for (const p in o) { const x = o[p] - (prev[k][p] || 0); if (x) d[p] = x; } return d; });
+  }
+
+  // For each outage: how long until another vendor took the down vendor's prefixes, and until they came back
+  _outages() {
+    const S = this.vSeries;
+    return (this.outages || []).map(o => {
+      const v = this.vendors[o.vendor], P = v.expect, end = o.up ?? Infinity;
+      const at = (k, p, from, to) => S.find(r => r.t > from && r.t <= to + 1 && r.byPrefix && r.byPrefix.some((b, j) => k(j) && P.some(x => b[x])));
+      const first = at(j => j !== o.vendor, null, o.down, end);
+      const back = o.up != null ? at(j => j === o.vendor, null, o.up, Infinity) : null;
+      const during = S.filter(r => r.t > o.down && r.t <= (o.up ?? Infinity) + 1 && r.byPrefix);
+      const by = this.vendors.map((x, j) => j === o.vendor ? 0 : during.reduce((a, r) => a + P.reduce((s2, p) => s2 + ((r.byPrefix[j] || {})[p] || 0), 0), 0));
+      return { vendor: v.name, prefixes: P, down: o.down, up: o.up,
+        // Per-second stats: the change happened within this many seconds
+        failoverAfter: first ? Math.max(1, Math.ceil(first.t - o.down)) : null, takenBy: this.vendors.filter((x, j) => by[j]).map(x => x.name), deliveredElsewhere: by.reduce((a, b) => a + b, 0),
+        backAfter: back ? Math.max(1, Math.ceil(back.t - o.up)) : null };
     });
   }
 
@@ -165,13 +219,29 @@ class RoutingRun extends EventEmitter {
     this.finishing = true;
     this._phase('finishing', 'Collecting results…');
     // One more vendor stats round so the last messages are counted
-    setTimeout(() => {
+    setTimeout(async () => {
       let rep = null;
+      try { await this._closeEvidence(); } catch {}
       try { rep = this._report(); } catch (e) { this._log('Could not build the report: {msg}', { msg: e.message }); }
       this._cleanup(); this.running = false; this.finishing = false;
       this.emit('done', rep);
       this._phase('done', 'Done');
     }, 2200);
+  }
+
+  // What the clients send (text before the marker, data_coding), as the load engine encodes it
+  _expected(spec) {
+    const text = spec.text || 'Routing test', a = analyze(text, spec.encoding || 'auto');
+    return { text, dcs: a && !a.error ? a.dcs : null };
+  }
+  // Ask every vendor to finish its evidence file; the report links them
+  _closeEvidence() {
+    return Promise.all((this.vendors || []).map(v => new Promise(res => {
+      if (!v.proc) return res();
+      const rid = Math.random().toString(36).slice(2), timer = setTimeout(res, 15000);
+      v.onEvidence = m => { if (m.rid !== rid) return; clearTimeout(timer); v.evidence = m.file ? { file: path.basename(m.file), rows: m.rows } : null; res(); };
+      v.proc.post({ type: 'evidenceClose', rid });
+    })));
   }
 
   stop() {
@@ -204,7 +274,7 @@ class RoutingRun extends EventEmitter {
       for (const cell of (v.stats && v.stats.routing && v.stats.routing.cells) || []) {
         let row = matrix.find(r => r.client === cell.client && r.prefix === cell.prefix);
         if (!row) matrix.push(row = { client: cell.client, prefix: cell.prefix, accepted: null, cells: vendors.map(() => null), extra: true });
-        row.cells[k] = { n: cell.n, dup: cell.dup, mis: cell.mis, p50: cell.lat.p50 ?? null, p95: cell.lat.p95 ?? null, p99: cell.lat.p99 ?? null };
+        row.cells[k] = { n: cell.n, dup: cell.dup, mis: cell.mis, fo: cell.fo || 0, p50: cell.lat.p50 ?? null, p95: cell.lat.p95 ?? null, p99: cell.lat.p99 ?? null };
       }
     });
     for (const r of matrix) {
@@ -213,6 +283,8 @@ class RoutingRun extends EventEmitter {
       r.mis = r.cells.reduce((a, x) => a + (x ? x.mis : 0), 0);
       r.lost = r.accepted == null ? null : Math.max(0, r.accepted - r.received);
       r.expected = vendors.filter(v => v.expect.includes(r.prefix)).map(v => v.name);
+      r.backup = vendors.filter(v => list(v.def.backup).map(normNum).includes(r.prefix)).map(v => v.name);
+      r.fo = r.cells.reduce((a, x) => a + (x ? x.fo : 0), 0);
     }
     matrix.sort((a, b) => a.client - b.client || a.prefix.localeCompare(b.prefix));
 
@@ -229,17 +301,22 @@ class RoutingRun extends EventEmitter {
     const tot = {
       sent: sum(clients, c => c.totals && c.totals.sent), accepted: sum(clients, c => c.totals && c.totals.ok),
       received: sum(matrix, r => r.received), lost: sum(matrix, r => r.lost), dup: sum(matrix, r => r.dup), misroute: sum(matrix, r => r.mis),
-      wrongDlr: sum(dlrCross, x => x.n), unknown: sum(matrix.filter(r => !r.client), r => r.received),
+      failover: sum(matrix, r => r.fo), wrongDlr: sum(dlrCross, x => x.n), unknown: sum(matrix.filter(r => !r.client), r => r.received),
+      ...['marked', 'unmarked', 'broken', 'textChanged', 'dcsChanged'].reduce((o, k) => (o[k] = sum(vendors, v => v.stats && v.stats.routing && v.stats.routing.content && v.stats.routing.content[k]), o), {}),
       clientErrors: clients.filter(c => c.error).length,
     };
-    const issues = [tot.lost, tot.dup, tot.misroute, tot.wrongDlr, tot.clientErrors].filter(Boolean).length;
+    const issues = [tot.lost, tot.dup, tot.misroute, tot.wrongDlr, tot.clientErrors, tot.unmarked + tot.broken, tot.textChanged, tot.dcsChanged].filter(Boolean).length;
     return {
       version: 1, kind: 'routing', name: S.name || '', createdAt: Date.now(), startedAt: this.startedAt, endedAt: Date.now(),
       test: { duration: S.duration, ramp: S.ramp, dlr: S.dlr !== false, dlrWait: S.dlrWait, respTimeout: S.respTimeout, text: S.text, encoding: S.encoding },
       vendors: vendors.map(v => ({ name: v.name, port: Number(v.def.port), systemId: v.def.systemId, expect: v.expect, respDelay: Number(v.def.respDelay) || 0, dlrDelay: Number(v.def.dlrDelay ?? 1000),
         failPct: Number(v.def.failPct) || 0, maxTps: Number(v.def.maxTps) || 0,
         received: v.stats ? v.stats.e2e.n : 0, dup: v.stats ? v.stats.e2e.dup : 0, e2e: v.stats ? v.stats.e2e.total : null,
-        misroute: v.stats && v.stats.routing ? v.stats.routing.misroute : 0, samples: v.stats && v.stats.routing ? v.stats.routing.samples : [] })),
+        misroute: v.stats && v.stats.routing ? v.stats.routing.misroute : 0, samples: v.stats && v.stats.routing ? v.stats.routing.samples : [],
+        content: v.stats && v.stats.routing ? v.stats.routing.content : null, evidence: v.evidence || null,
+        backup: list(v.def.backup).map(normNum).filter(Boolean), failover: v.stats && v.stats.routing ? v.stats.routing.failover || 0 : 0 })),
+      expected: this.spec.clients ? this._expected(this.spec) : null,
+      outages: this._outages(),
       clients: clients.map(c => ({ tag: c.tag, name: c.name, host: c.def.host, port: Number(c.def.port) || 2775, systemId: c.def.systemId, sessions: Number(c.def.sessions), window: Number(c.def.window), tps: Number(c.def.tps), dst: c.def.dst,
         error: c.error ? (c.error.key ? err(c.error.key, c.error.p).message : c.error.text) : null,
         totals: strip(c.totals), series: c.done ? c.done.series : [], events: c.done ? c.done.events : [] })),

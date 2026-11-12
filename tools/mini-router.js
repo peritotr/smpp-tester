@@ -1,15 +1,16 @@
 // A tiny SMS platform for trying out the routing test without a real SMSC: accepts customer binds, routes each
 // submit_sm by destination prefix to a vendor, and sends the vendor's DLRs back to the customer that sent the
 // message. Faults on purpose: misrouteEvery = every Nth message goes to the wrong vendor, wrongDlrEvery = every Nth
-// DLR goes to another customer, dropEvery = every Nth message is accepted but never forwarded.
+// DLR goes to another customer; FAILOVER=1 sends a down vendor's prefixes to another vendor that is up; dropEvery = every Nth message is accepted but never forwarded.
 //
 // node tools/mini-router.js <port> <prefix>=<host:port:system_id:password> [...]
 //   e.g. node tools/mini-router.js 2900 9053=127.0.0.1:2901:vendA:pw 9054=127.0.0.1:2902:vendB:pw
 const smpp = require('smpp');
 
-function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEvery = 0, log = () => {} }) {
+function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEvery = 0, textEvery = 0, stripEvery = 0, dcsEvery = 0, failover = false, log = () => {} }) {
   const vendors = [], customers = new Set(), byVendorId = new Map();
-  let seq = 0, nSub = 0, nDlr = 0, nDrop = 0, closed = false; const stats = { misrouted: 0, wrongDlr: 0, dropped: 0 };
+  let seq = 0, nSub = 0, nDlr = 0, nDrop = 0, closed = false; let allUp = false;
+  const stats = { failedOver: 0, misrouted: 0, wrongDlr: 0, dropped: 0, textChanged: 0, stripped: 0, dcsChanged: 0 }; let nMod = 0;
   const ownId = () => 'R' + (++seq).toString(36).toUpperCase();
 
   // Vendor connections are retried until the vendor listens (it may start after the router)
@@ -26,6 +27,7 @@ function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEv
     };
     open();
   })));
+  ready.then(() => { allUp = true; });
   function onDlr(s, pdu) {
     s.send(pdu.response());
     const vid = pdu.receipted_message_id || (/id:(\S+)/.exec(String(pdu.short_message && pdu.short_message.message || '')) || [])[1];
@@ -48,11 +50,18 @@ function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEv
       const dst = String(pdu.destination_addr).replace(/\D/g, '');
       let v = vendors.find(x => dst.startsWith(x.prefix));
       if (!v) return session.send(pdu.response({ command_status: 0x0b })); // ESME_RINVDSTADR
-      if (!vendors.every(x => x.up)) return session.send(pdu.response({ command_status: 0x14 })); // vendors not connected yet: queue full
+      if (!allUp) return session.send(pdu.response({ command_status: 0x14 })); // vendors not connected yet: queue full
+      if (!v.up) { const alt = failover && vendors.find(x => x.up); if (!alt) return session.send(pdu.response({ command_status: 0x14 })); v = alt; stats.failedOver++; }
       if (dropEvery && ++nDrop % dropEvery === 0) { stats.dropped++; return session.send(pdu.response({ message_id: ownId() })); } // accepted, never forwarded
       if (misrouteEvery && ++nSub % misrouteEvery === 0) { v = vendors.find(x => x !== v) || v; stats.misrouted++; }
       const own = ownId();
-      v.s.submit_sm({ source_addr: pdu.source_addr, destination_addr: pdu.destination_addr, data_coding: pdu.data_coding, short_message: pdu.short_message, registered_delivery: pdu.registered_delivery }, r => {
+      // Content faults: change the text, drop the marker, or re-encode as UCS-2
+      let sm = pdu.short_message, dc = pdu.data_coding; nMod++;
+      const txt = sm && typeof sm.message === 'string' ? sm.message : null;
+      if (txt != null && textEvery && nMod % textEvery === 0) { sm = { message: 'X' + txt }; stats.textChanged++; }
+      else if (txt != null && stripEvery && nMod % stripEvery === 1 % stripEvery) { sm = { message: txt.replace(/ ?#T\d+/, '') }; stats.stripped++; }
+      else if (txt != null && dcsEvery && nMod % dcsEvery === 2 % dcsEvery) { dc = 8; stats.dcsChanged++; }
+      v.s.submit_sm({ source_addr: pdu.source_addr, destination_addr: pdu.destination_addr, data_coding: dc, short_message: sm, registered_delivery: pdu.registered_delivery }, r => {
         if (r.command_status !== 0) return session.send(pdu.response({ command_status: r.command_status }));
         if (pdu.registered_delivery) byVendorId.set(r.message_id, { own, customer: session });
         session.send(pdu.response({ message_id: own }));
@@ -66,7 +75,7 @@ function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEv
 if (require.main === module) {
   const [port, ...rest] = process.argv.slice(2);
   const routes = rest.map(a => { const [prefix, to] = a.split('='); return { prefix, to }; });
-  const r = miniRouter({ port: Number(port), routes, misrouteEvery: Number(process.env.MISROUTE_EVERY) || 0, wrongDlrEvery: Number(process.env.WRONG_DLR_EVERY) || 0, dropEvery: Number(process.env.DROP_EVERY) || 0, log: console.log });
+  const r = miniRouter({ port: Number(port), routes, failover: !!process.env.FAILOVER, misrouteEvery: Number(process.env.MISROUTE_EVERY) || 0, wrongDlrEvery: Number(process.env.WRONG_DLR_EVERY) || 0, dropEvery: Number(process.env.DROP_EVERY) || 0, log: console.log });
   r.ready.then(() => console.log(`mini router on ${port}: ${routes.map(x => x.prefix + ' → ' + x.to.split(':').slice(0, 2).join(':')).join(', ')}`), e => { console.error(e.message); process.exit(1); });
 }
 

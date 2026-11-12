@@ -5,7 +5,9 @@ const path = require('path');
 const { summary } = require('./ui/analysis.js');
 
 class ReportStore {
-  constructor(dir) { this.dir = dir; fs.mkdirSync(dir, { recursive: true }); }
+  constructor(dir) { this.dir = dir; this.evidenceDir = path.join(dir, 'evidence'); fs.mkdirSync(dir, { recursive: true }); }
+  // Routing test evidence file (gzipped CSV) by its name, or null
+  evidencePath(name) { return /^[\w.-]+\.csv\.gz$/.test(String(name)) ? path.join(this.evidenceDir, name) : null; }
   _idx() { try { return JSON.parse(fs.readFileSync(path.join(this.dir, 'index.json'), 'utf8')); } catch { return this._rebuild(); } }
   _writeIdx(list) { fs.writeFileSync(path.join(this.dir, 'index.json'), JSON.stringify(list)); }
   _rebuild() {
@@ -45,6 +47,8 @@ class ReportStore {
   }
   remove(id) {
     if (!/^[\w-]+$/.test(String(id))) return false;
+    const rep = this.get(id);
+    for (const v of (rep && rep.vendors) || []) { const f = v.evidence && this.evidencePath(v.evidence.file); if (f) try { fs.unlinkSync(f); } catch {} }
     try { fs.unlinkSync(path.join(this.dir, id + '.json')); } catch {}
     this._writeIdx(this._idx().filter(e => e.id !== id)); return true;
   }

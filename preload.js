@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('api', {
   routingStop: () => ipcRenderer.invoke('routing:stop'),
   routingVendorsStart: spec => ipcRenderer.invoke('routing:vendorsStart', spec),
   routingVendorsStop: () => ipcRenderer.invoke('routing:vendorsStop'),
+  routingVendorDown: i => ipcRenderer.invoke('routing:vendorDown', i),
+  routingVendorUp: i => ipcRenderer.invoke('routing:vendorUp', i),
   mockStart: o => ipcRenderer.invoke('mock:start', o),
   mockStop: () => ipcRenderer.invoke('mock:stop'),
   mockReset: () => ipcRenderer.invoke('mock:reset'),
@@ -31,5 +33,6 @@ contextBridge.exposeInMainWorld('api', {
   reportRename: (id, name) => ipcRenderer.invoke('reports:rename', id, name),
   reportOpen: id => ipcRenderer.invoke('report:open', id),
   reportPdf: name => ipcRenderer.invoke('report:pdf', name),
+  evidenceSave: file => ipcRenderer.invoke('evidence:save', file),
   on: (ch, fn) => ipcRenderer.on(ch, (_, d) => fn(d)),
 });

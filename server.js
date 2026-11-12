@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { fork } = require('child_process');
 const { WebSocketServer } = require('ws');
 const { SmppClient, analyze } = require('./smpp-core');
@@ -169,6 +170,7 @@ const routing = new RoutingRun((file, onMsg) => {
   p.on('message', onMsg);
   return { post: m => { if (p.connected) p.send(m); }, kill: () => p.kill(), onExit: f => p.on('exit', f) };
 });
+routing.evidenceDir = reports.evidenceDir;
 state.routing = { phase: 'idle' }; let routingTick = null;
 routing.on('phase', m => { state.routing = { ...m, reportId: m.phase === 'starting' ? null : state.routing.reportId }; broadcast('routing:phase', state.routing); });
 routing.on('tick', m => { routingTick = m; broadcast('routing:tick', m); });
@@ -232,6 +234,8 @@ const handlers = {
   },
   'routing:stop': () => { routing.stop(); return { ok: true }; },
   'routing:vendorsStart': async spec => { try { return { ok: true, list: await routing.startVendors(spec || {}) }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } },
+  'routing:vendorDown': i => ({ ok: routing.vendorDown(Number(i)) }),
+  'routing:vendorUp': i => ({ ok: routing.vendorUp(Number(i)) }),
   'routing:vendorsStop': () => { try { routing.stopVendors(); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } },
   'load:kill': () => { if (loadProc) loadProc.kill(); return { ok: true }; },
   'mock:start': o => startMock(o || {}),
@@ -297,6 +301,17 @@ const server = http.createServer((req, res) => {
   if (!validToken(cookieOf(req))) {
     if (url.pathname === '/' || url.pathname.endsWith('.html')) { res.writeHead(303, { Location: '/login' }); return res.end(); }
     res.writeHead(401, SEC_HEADERS); return res.end();
+  }
+
+  // Routing test evidence: the vendor's gzipped CSV, sent as plain CSV
+  if (url.pathname === '/evidence') {
+    const f = reports.evidencePath(url.searchParams.get('file') || '');
+    if (!f || !fs.existsSync(f)) { res.writeHead(404, SEC_HEADERS); return res.end(); }
+    const name = path.basename(f).replace(/\.gz$/, '');
+    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, ...SEC_HEADERS });
+    const src = fs.createReadStream(f), gz = zlib.createGunzip();
+    src.on('error', () => res.destroy()); gz.on('error', () => res.destroy());
+    return src.pipe(gz).pipe(res);
   }
 
   let rel = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.slice(1));

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.2
+
+- Routing test, **content check**: every message at a vendor is checked for an intact marker, the exact text that was sent and the same `data_coding`. The report shows per vendor the counts (intact, no marker, broken marker, text changed, `data_coding` changed), also when they are zero, with examples; any of them fails the test
+- **Evidence CSV per vendor**: one row per message received (vendor message_id, recipient, sender, marker, submit and receive time, end-to-end ms, `data_coding`, check results), downloadable from the report, to compare with the platform's records without backend access
+- **Failover**: vendors can be the backup for other prefixes; a vendor can be taken down and brought back during the test while the others keep running. The report shows per outage how fast the prefixes moved to the backup and back, and backup traffic is not counted as misrouted
+
 ## 1.9.1
 
 - Routing test: **Start vendors** starts the vendors on their own, so the platform can bind to them before the test; they stay up between tests (counters start from zero each test). Each vendor shows whether the platform is bound

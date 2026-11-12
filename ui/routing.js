@@ -2,7 +2,7 @@
 (() => {
   const MAX = 4;
   const fmtN = n => n == null || isNaN(n) ? '—' : Math.round(n).toLocaleString(I18N.locale);
-  const VCOLS = [['name', 'w-m'], ['port', 'w-s', 'number'], ['systemId', 'w-m'], ['password', 'w-m', 'password'], ['prefixes', 'w-l'], ['respDelay', 'w-s', 'number'], ['dlrDelay', 'w-s', 'number'], ['failPct', 'w-s', 'number'], ['maxTps', 'w-s', 'number']];
+  const VCOLS = [['name', 'w-m'], ['port', 'w-s', 'number'], ['systemId', 'w-m'], ['password', 'w-m', 'password'], ['prefixes', 'w-m'], ['backup', 'w-m'], ['respDelay', 'w-s', 'number'], ['dlrDelay', 'w-s', 'number'], ['failPct', 'w-s', 'number'], ['maxTps', 'w-s', 'number']];
   const CCOLS = [['name', 'w-m'], ['profile', 'w-m', 'profile'], ['host', 'w-m'], ['port', 'w-s', 'number'], ['systemId', 'w-m'], ['password', 'w-m', 'password'], ['dst', 'w-l'], ['sessions', 'w-s', 'number'], ['window', 'w-s', 'number'], ['tps', 'w-s', 'number']];
   const newV = i => ({ name: 'Vendor ' + String.fromCharCode(65 + i), port: 2781 + i, systemId: 'vend' + String.fromCharCode(65 + i), password: 'test', prefixes: '', respDelay: 0, dlrDelay: 1000, failPct: 0, maxTps: 0 });
   const newC = i => ({ name: 'Client ' + (i + 1), profile: '', host: val('host') || '', port: Number(val('port')) || 2775, systemId: '', password: '', dst: '', sessions: 4, window: 200, tps: 1000 });
@@ -71,7 +71,7 @@
     vUp = !!(m && m.up);
     const L = (m && m.list) || [];
     $('rtVState').innerHTML = vUp ? L.map(v => `<span class="${v.conns ? 'ok' : 'warn'}">${esc(v.name)} ${v.conns ? '✓ ' + esc(t('bound')) : '○ ' + esc(t('waiting for bind'))}</span>`).join(' · ') : '';
-    if (vUp && !running) $('rtLiveV').innerHTML = L.map(v => `<tr><td>${esc(v.name)}</td><td class="r ${v.conns ? 'ok' : 'warn'}">${v.conns}</td><td class="r">—</td><td class="r">—</td><td class="r">—</td><td class="r">—</td></tr>`).join('');
+    if (vUp && !running) $('rtLiveV').innerHTML = L.map((v, i) => `<tr><td>${esc(v.name)}${v.down ? ` <span class="err">${esc(t('down'))}</span>` : ''}</td><td class="r ${v.conns ? 'ok' : 'warn'}">${v.conns}</td><td class="r">—</td><td class="r">—</td><td class="r">—</td><td class="r">—</td><td class="r">—</td><td class="r">${vBtn(i, v.down)}</td></tr>`).join('');
     setRunning(running);
   }
   $('rtVendors').onclick = async () => {
@@ -83,6 +83,13 @@
     else phase(wasUp ? '' : t('Vendors are up: add them on your platform and wait until each shows "bound".'));
   };
   api.on('routing:vendors', vendorsState);
+  // Failover test: take one vendor down and bring it back while the test runs
+  const vBtn = (i, down) => `<button class="small ${down ? 'primary' : 'ghost'}" data-vi="${i}" data-down="${down ? 1 : 0}">${esc(down ? t('Bring up') : t('Take down'))}</button>`;
+  $('rtLiveV').addEventListener('click', async e => {
+    const b = e.target.closest('button[data-vi]'); if (!b) return;
+    b.disabled = true;
+    await (b.dataset.down === '1' ? api.routingVendorUp(Number(b.dataset.vi)) : api.routingVendorDown(Number(b.dataset.vi)));
+  });
   const phase = (m, cls) => { $('rtPhase').textContent = m ? tm(m) : ''; $('rtPhase').className = cls || 'muted'; };
   const log = m => { const el = $('rtLog'); el.textContent = `${new Date().toLocaleTimeString(I18N.locale)}  ${m}\n` + el.textContent.slice(0, 20000); };
 
@@ -115,8 +122,8 @@
   api.on('routing:tick', m => {
     $('rtLiveC').innerHTML = m.clients.map(c => `<tr><td>${esc(c.name)}</td><td class="${c.phase === 'error' ? 'err' : ''}">${esc(t(PH[c.phase] || c.phase))}</td><td class="r">${fmtN(c.sentTps)}</td><td class="r">${fmtN(c.okTps)}</td>
       <td class="r">${c.p95 == null ? '—' : c.p95 < 10 ? c.p95.toFixed(1) : Math.round(c.p95)}</td><td class="r ${c.thrTps ? 'warn' : ''}">${fmtN(c.thrTps)}</td><td class="r ${c.errTps ? 'err' : ''}">${fmtN(c.errTps)}</td><td class="r">${fmtN(c.sent)}</td><td class="r">${fmtN(c.dlr)}</td></tr>`).join('');
-    $('rtLiveV').innerHTML = m.vendors.map(v => `<tr><td>${esc(v.name)}</td><td class="r">${v.conns}</td><td class="r">${fmtN(v.rx)}</td><td class="r">${fmtN(v.n)}</td>
-      <td class="r">${v.e2eP95 == null ? '—' : Math.round(v.e2eP95) + ' ms'}</td><td class="r ${v.misroute ? 'err' : 'ok'}">${fmtN(v.misroute)}</td></tr>`).join('');
+    $('rtLiveV').innerHTML = m.vendors.map((v, i) => `<tr><td>${esc(v.name)}${v.down ? ` <span class="err">${esc(t('down'))}</span>` : ''}</td><td class="r">${v.conns}</td><td class="r">${fmtN(v.rx)}</td><td class="r">${fmtN(v.n)}</td>
+      <td class="r">${v.e2eP95 == null ? '—' : Math.round(v.e2eP95) + ' ms'}</td><td class="r ${v.misroute ? 'err' : 'ok'}">${fmtN(v.misroute)}</td><td class="r ${v.failover ? 'warn' : ''}">${fmtN(v.failover)}</td><td class="r">${vBtn(i, v.down)}</td></tr>`).join('');
   });
   api.on('routing:done', m => {
     setRunning(false); reportId = m.reportId;
