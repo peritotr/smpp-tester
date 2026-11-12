@@ -3,7 +3,7 @@
   const fmtN = n => n == null ? '—' : Math.round(n).toLocaleString(I18N.locale);
   const fmtD = ts => { const d = new Date(ts); return d.toLocaleDateString(I18N.locale) + ' ' + d.toLocaleTimeString(I18N.locale, { hour: '2-digit', minute: '2-digit' }); };
   // 'kademeli' / 'sabit' are kept for reports saved by older versions
-  const modeName = m => (m === 'step' || m === 'kademeli') ? t('Step') : t('Constant');
+  const modeName = m => m === 'routing' ? t('Routing') : (m === 'step' || m === 'kademeli') ? t('Step') : t('Constant');
   async function refresh() {
     let list = [];
     try { list = await api.reportsList() || []; } catch {}

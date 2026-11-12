@@ -258,6 +258,7 @@ api.on('app:sync', st => {
     renderState(); updateButtons();
   }
   if (window.onLoadSync && st.load) window.onLoadSync(st.load);
+  if (window.onRoutingSync && st.routing) window.onRoutingSync(st.routing);
 });
 let logoutLink = null;
 if (api.web) {

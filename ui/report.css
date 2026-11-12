@@ -57,3 +57,5 @@ tr.st-latency td{background:#c98a1314} tr.st-saturated td{background:#d9484814}
   section{border:1px solid #ddd;page-break-inside:avoid}
   .chart canvas{height:220px}
 }
+.scroll{overflow-x:auto}
+section h3{font-size:13px;margin:16px 0 6px}

@@ -18,6 +18,8 @@ const journal = require('./dlr-journal');
 const { MinHeap, delaySampler, backoff, parseCodes, hex } = require('./dlr-sched');
 const KEEP = 1000; // incoming messages kept for the "Vendor messages" list
 const TAG = /#T(\d{13})(\d{7})/;
+// Numbers and prefixes compared as digits only, without a leading 00 or +: "+90 532…", "0090532…" and "90532…" match
+const normNum = v => String(v || '').replace(/\D/g, '').replace(/^00/, '');
 const fill = (s, p) => p ? s.replace(/\{(\w+)\}/g, (m, k) => p[k] !== undefined ? p[k] : m) : s;
 const msg = (key, p) => ({ key, p, text: fill(key, p) });
 
@@ -79,7 +81,7 @@ class MockSmsc extends EventEmitter {
   // Last KEEP submit_sm kept raw (cheap at high TPS); decoded only when the list is asked for
   clearMsgs() { this.msgs = new Array(KEEP); this.msgHead = 0; this.msgTotal = 0; this.encCount = {}; }
 
-  resetE2e() { this.e2e = { n: 0, dup: 0, hist: new Hist(), sec: new Hist(), seen: new Set() }; }
+  resetE2e() { this.e2e = { n: 0, dup: 0, hist: new Hist(), sec: new Hist(), seen: new Set() }; this.rt = new Map(); this.rtMis = 0; this.rtSamples = []; }
 
   start(opts = {}) {
     if (this.server) return;
@@ -121,6 +123,12 @@ class MockSmsc extends EventEmitter {
       metricsHost: opts.metricsHost || '127.0.0.1',
       metricsLog: !!opts.metricsLog,
       metricsIntervalMs: Math.max(1000, num(opts.metricsIntervalMs, 5000)),
+      // Routing test: the prefixes in play (longest match wins) and the ones this vendor should receive.
+      // Messages are counted per client (from the end-to-end marker) × prefix; a prefix not expected here is a misroute.
+      routing: opts.routing ? {
+        prefixes: [...new Set((opts.routing.prefixes || []).map(normNum).filter(Boolean))].sort((a, b) => b.length - a.length),
+        expect: new Set((opts.routing.expect || []).map(normNum).filter(Boolean)),
+      } : null,
     };
     this.o.dlrDelaySample = delaySampler(this.o.dlrDelayMode, this.o.dlrDelay, this.o.dlrDelaySpread);
     this.idPrefix = idPrefix(); this.idc = 0; // fresh, never-seen ids after every (re)start
@@ -158,7 +166,8 @@ class MockSmsc extends EventEmitter {
       dlrRejected: Object.values(M.rejectedByCode).reduce((a, b) => a + b, 0), dlrPermanentFailed: M.permanentFailed,
       submitRespP99: r.p99 ?? null,
       respQueue: (this.respQ || []).length - (this.respHead || 0),
-      e2e: { n: e.n, dup: e.dup, sec: e.sec.summary(), total: e.hist.summary() } });
+      e2e: { n: e.n, dup: e.dup, sec: e.sec.summary(), total: e.hist.summary() },
+      routing: this.o.routing ? { misroute: this.rtMis, samples: this.rtSamples, cells: [...this.rt.values()].map(x => ({ client: x.client, prefix: x.prefix, n: x.n, dup: x.dup, mis: x.mis, lat: x.lat.summary() })) } : undefined });
     e.sec = new Hist();
     this.stats.rx = 0; this.stats.throttled = 0; this.stats.dlrSent = 0;
   }
@@ -255,7 +264,8 @@ class MockSmsc extends EventEmitter {
     [, p] = cstr(body, p); [, p] = cstr(body, p); // schedule, validity
     const reg = body[p] & 0x03;
     const { dcs, sm } = this._sm(body, p);
-    this._e2e(dcs, sm, now);
+    const e2 = this._e2e(dcs, sm, now);
+    if (this.o.routing) this._route(c, dst, e2);
     // Keep a copy for the "Vendor messages" list: what arrived, from which account, in which encoding
     this.msgs[this.msgHead] = { t: now, sid: c.sid || '', src, srcTon, dst, dstTon, esm, dcs, reg, id, sm: Buffer.from(sm) };
     this.msgHead = (this.msgHead + 1) % KEEP; this.msgTotal++;
@@ -295,10 +305,26 @@ class MockSmsc extends EventEmitter {
     if ((dcs & 0x0f) === 8) { const le = Buffer.allocUnsafe(sm.length & ~1); for (let i = 0; i + 1 < sm.length; i += 2) { le[i] = sm[i + 1]; le[i + 1] = sm[i]; } txt = le.toString('utf16le'); }
     else txt = sm.toString('latin1');
     const mt = TAG.exec(txt); if (!mt) return;
-    const e = this.e2e, key = mt[1] + mt[2];
-    if (e.seen.has(key)) { e.dup++; return; }
+    const e = this.e2e, key = mt[1] + mt[2], client = mt[2].charCodeAt(0) - 48;
+    if (e.seen.has(key)) { e.dup++; return { client, dup: true }; }
     e.seen.add(key); if (e.seen.size > 3000000) e.seen.clear();
     e.n++; const lat = Math.max(0, now - Number(mt[1])); e.hist.add(lat); e.sec.add(lat);
+    return { client, lat };
+  }
+
+  // Routing test: count the message under client × prefix; a prefix this vendor should not get is a misroute
+  _route(c, dst, e2) {
+    const R = this.o.routing, d = normNum(dst);
+    const prefix = R.prefixes.find(p => d.startsWith(p)) || 'other';
+    const client = e2 ? e2.client : 0, k = client + '|' + prefix;
+    let cell = this.rt.get(k);
+    if (!cell) this.rt.set(k, cell = { client, prefix, n: 0, dup: 0, mis: 0, lat: new Hist() });
+    if (e2 && e2.dup) { cell.dup++; return; }
+    cell.n++; if (e2) cell.lat.add(e2.lat);
+    if (R.expect.size && !R.expect.has(prefix)) {
+      cell.mis++; this.rtMis++;
+      if (this.rtSamples.length < 20) this.rtSamples.push({ t: Date.now(), dst, client, sid: c.sid || '' });
+    }
   }
 
   _flushResp() {

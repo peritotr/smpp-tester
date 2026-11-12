@@ -44,6 +44,7 @@ When the run ends, you don't get a wall of numbers. You get a report that says, 
 - **20,000 TPS with DLRs** from a 2-vCPU machine, with client and mock vendor on the same box
 - **Step tests** that find the knee point automatically
 - **End-to-end tracking** through your platform: loss, duplicates, latency
+- **Routing test**: up to 4 customers and 4 vendors at once, to check that each prefix lands at the right vendor and each DLR goes back to the right customer
 - **A mock vendor you can misbehave on purpose**: throttling, slow responses, failing DLRs, a queue that backs up
 - **Pass / fail against your SLA**, saved reports, PDF export
 - **Desktop or server**: the same UI as a native app or behind a password in your browser
@@ -62,6 +63,11 @@ When the run ends, you don't get a wall of numbers. You get a report that says, 
 - Automatic slow-down and retry on `ESME_RTHROTTLED` / `ESME_RMSGQFUL`
 - Random recipients (`4477009XXXXX`), live TPS and latency charts (p50/p95/p99), error code and DLR status breakdown
 - Sustains 20,000 TPS with DLRs on a 2-vCPU machine (client and mock vendor on the same box)
+
+**Routing test**
+- Up to 4 vendors and 4 clients in one run, each in its own process; every vendor has its own port and system_id, every client is a separate customer account
+- Per client a weighted prefix mix (`9053XXXXXXXX:70, 9054XXXXXXXX:30`); per vendor the prefixes it should get and its own behaviour (response delay, DLR delay, failed DLRs, TPS limit)
+- Report: a client × prefix × vendor table with counts and end-to-end p95, misrouted messages with examples, lost and duplicate messages, DLRs that reached a different customer than the sender. See [Routing test](#routing-test)
 
 **Built-in vendor (mock SMSC)**
 - Your platform binds to it as a supplier; it accepts messages and returns DLRs
@@ -159,6 +165,33 @@ The load test helps with this:
 - **Average after ramp-up** is the rate from the end of the ramp-up to the end of sending. The average including the ramp-up is shown next to it, in the report and in the CSV.
 
 If *In flight* sits at `sessions × window` while response times are rising, the platform is slowing down; then a bigger window only makes its queue longer.
+
+## Routing test
+
+For platforms that route by destination prefix. The **Routing test** tab runs several vendors and several clients at once against your platform, and checks where every message ends up.
+
+Example: two vendors and two customers.
+
+```
+Client 1 (customer 1) ─┐                       ┌─▶ Vendor A  port 2781  vendA  should get 9053
+                        ├─▶  your platform  ────┤
+Client 2 (customer 2) ─┘   (prefix routing)    └─▶ Vendor B  port 2782  vendB  should get 9054
+```
+
+1. On your platform, add Vendor A and Vendor B as suppliers (the tab shows the IP, port and system_id to use) and route 9053 to A and 9054 to B.
+2. Create two test customers with a TPS limit above what you will send.
+3. In the tab, set each client's server, system_id and password (or pick a saved profile) and its prefix mix, e.g. `9053XXXXXXXX:70, 9054XXXXXXXX:30` for client 1 and the other way round for client 2.
+4. Start. All vendors start first, then all clients together.
+
+How it is measured: each message carries the end-to-end marker with the client's number. Each vendor counts what it gets per client and prefix; a prefix it is not listed for counts as **misrouted**. A message accepted by the platform but seen at no vendor is **lost**; one seen twice is a **duplicate**. At the end, every DLR a client could not match is looked up in the other clients' sent messages: a hit is a **DLR at the wrong client**. The test passes when all four are zero.
+
+Limits: 4 vendors and 4 clients. The marker must reach the vendor unchanged (messages without it are reported separately). Everything runs on one machine, so the total rate of all clients shares its CPU; on 2 vCPU stay around 20,000 TPS in total.
+
+`tools/mini-router.js` is a tiny prefix router for trying the tab without a real platform. It can also make mistakes on purpose (`MISROUTE_EVERY`, `WRONG_DLR_EVERY`, `DROP_EVERY`):
+
+```
+node tools/mini-router.js 2790 9053=127.0.0.1:2781:vendA:test 9054=127.0.0.1:2782:vendB:test
+```
 
 ## Built-in vendor under load
 
@@ -297,6 +330,7 @@ flowchart LR
 | --- | --- |
 | `smpp-core.js` | Interactive SMPP client and encoding helpers |
 | `load-engine.js`, `load-worker.js` | Load engine (own process): sessions, windowing, token-bucket rate control, histograms |
+| `routing-run.js` | Routing test: starts the vendors and clients, builds the client × prefix × vendor report |
 | `mock-smsc.js`, `mock-worker.js` | Mock vendor on raw sockets (own process) |
 | `dlr-journal.js`, `dlr-journal-worker.js` | Keeps undelivered DLRs on disk so they survive a vendor restart (file work in a worker thread) |
 | `dlr-sched.js` | DLR scheduling helpers: heap, delay distributions, back-off |
@@ -306,7 +340,7 @@ flowchart LR
 | `server.js`, `ui/web-api.js` | Web server edition (HTTP + WebSocket, password login) |
 | `ui/` | User interface (plain HTML/CSS/JS, no framework), `ui/i18n.js` for translations |
 | `test/` | Test suite (`npm test`) |
-| `tools/` | `bench.js` (CLI benchmark), `vendor-load-check.js` (vendor under gateway load), `dlr-redelivery-check.js`, `report-demo.js`, `i18n-keys.js` |
+| `tools/` | `bench.js` (CLI benchmark), `vendor-load-check.js` (vendor under gateway load), `dlr-redelivery-check.js`, `mini-router.js` (prefix router for trying the routing test), `report-demo.js`, `i18n-keys.js` |
 
 ## Development
 

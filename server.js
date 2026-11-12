@@ -17,6 +17,7 @@ const { fork } = require('child_process');
 const { WebSocketServer } = require('ws');
 const { SmppClient, analyze } = require('./smpp-core');
 const { ReportStore, assembleReport } = require('./reports');
+const { RoutingRun } = require('./routing-run');
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -162,7 +163,24 @@ function restoreVendor() {
   startMock(o).then(r => console.log(r.ok ? `Vendor restored with its last settings (${o.bindHost}:${o.port})` : `Could not start the vendor: ${r.error && r.error.text || r.error}`));
 }
 
-function publicState(full) { return { smpp: state.smpp, mock: state.mock, load: full ? { ...state.load, series: loadSeries, totals: loadTotals } : state.load, server: true }; }
+// Routing test: several vendors and clients at once, each in its own process (see routing-run.js)
+const routing = new RoutingRun((file, onMsg) => {
+  const p = fork(path.join(__dirname, file), [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+  p.on('message', onMsg);
+  return { post: m => { if (p.connected) p.send(m); }, kill: () => p.kill(), onExit: f => p.on('exit', f) };
+});
+state.routing = { phase: 'idle' }; let routingTick = null;
+routing.on('phase', m => { state.routing = { ...m, reportId: m.phase === 'starting' ? null : state.routing.reportId }; broadcast('routing:phase', state.routing); });
+routing.on('tick', m => { routingTick = m; broadcast('routing:tick', m); });
+for (const ev of ['log', 'vlog', 'clog']) routing.on(ev, m => broadcast('routing:' + ev, m));
+routing.on('done', rep => {
+  let entry = null;
+  if (rep) try { entry = reports.save(rep); broadcast('report:saved', entry); } catch (e) { console.error('Could not save the report:', e.message); }
+  state.routing = { ...state.routing, reportId: entry && entry.id };
+  broadcast('routing:done', { reportId: entry && entry.id, totals: rep && rep.totals, verdict: rep && rep.verdict });
+});
+
+function publicState(full) { return { smpp: state.smpp, mock: state.mock, load: full ? { ...state.load, series: loadSeries, totals: loadTotals } : state.load, routing: { ...state.routing, tick: routingTick }, server: true }; }
 
 // ---------- Profiles ----------
 const profilesFile = path.join(DATA_DIR, 'profiles.json');
@@ -206,6 +224,11 @@ const handlers = {
     getLoad().send({ type: 'start', cfg, test }); return { ok: true };
   },
   'load:stop': () => { if (loadProc) loadProc.send({ type: 'stop' }); return { ok: true }; },
+  'routing:start': async spec => {
+    if (['binding', 'running', 'draining'].includes(state.load.phase)) return { ok: false, error: 'A load test is running' };
+    try { routingTick = null; await routing.start(spec); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; }
+  },
+  'routing:stop': () => { routing.stop(); return { ok: true }; },
   'load:kill': () => { if (loadProc) loadProc.kill(); return { ok: true }; },
   'mock:start': o => startMock(o || {}),
   'mock:stop': () => {

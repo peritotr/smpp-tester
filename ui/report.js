@@ -18,6 +18,7 @@
   let rep = null;
   try { rep = await api.reportGet(id); } catch {}
   if (!rep) { $('report').innerHTML = `<section><h2>${esc(t('Report not found'))}</h2><p class="muted">${esc(t('It may have been deleted.'))}</p></section>`; return; }
+  if (rep.kind === 'routing') return window.RoutingReport(rep, { $, t, esc, css, N, MS, mmss, dt });
   const T = rep.totals || {}, test = rep.test || {}, S = rep.series || [], ev = rep.events || [];
   const L = T.lat || {}, ve = rep.vendor && rep.vendor.e2e, steps = test.steps && test.steps.length;
   let a, title;

@@ -59,6 +59,8 @@
     analyze: (t, e) => invoke('smpp:analyze', t, e),
     loadStart: (cfg, test) => invoke('load:start', cfg, test),
     loadStop: () => invoke('load:stop'),
+    routingStart: spec => invoke('routing:start', spec),
+    routingStop: () => invoke('routing:stop'),
     loadKill: () => invoke('load:kill'),
     mockStart: o => invoke('mock:start', o),
     mockStop: () => invoke('mock:stop'),

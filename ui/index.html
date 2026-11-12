@@ -92,6 +92,7 @@
   <div class="modes">
     <button data-mode="single" class="on" data-i18n>Single test</button>
     <button data-mode="load" data-i18n>Load test</button>
+    <button data-mode="routing" data-i18n>Routing test</button>
     <button data-mode="reports"><span data-i18n>Reports</span> <span id="cReports" class="cnt">0</span></button>
     <button data-mode="vmsgs"><span data-i18n>Vendor messages</span> <span id="cVmsgs" class="cnt">0</span></button>
   </div>
@@ -244,6 +245,37 @@
       </table>
     </div>
   </div>
+  <div class="view" id="view-routing">
+    <section class="compose rt">
+      <p class="muted small" data-i18n>Several clients (customer accounts) send to your platform at the same time; your platform routes each prefix to one of the vendors below. Every message is tracked: which vendor it reached, whether that was the right one, and whether its DLR went back to the client that sent it.</p>
+      <div class="rt-h"><b data-i18n>Vendors</b> <span id="rtVHint" class="muted small"></span><span class="spacer"></span><button id="rtAddV" class="ghost small" data-i18n>+ Vendor</button></div>
+      <div class="rt-scroll"><table class="rt-t"><thead><tr><th data-i18n>Name</th><th data-i18n>Port</th><th>system_id</th><th data-i18n>Password</th><th title="Prefixes your platform should route to this vendor, e.g. 9053, 90532" data-i18n-attr="title"><span data-i18n>Should get (prefixes)</span></th><th data-i18n>Response (ms)</th><th data-i18n>DLR after (ms)</th><th data-i18n>Failed DLR %</th><th data-i18n>TPS limit</th><th></th></tr></thead><tbody id="rtV"></tbody></table></div>
+      <div class="rt-h"><b data-i18n>Clients</b> <span class="muted small" data-i18n>Each client is a different customer account on your platform.</span><span class="spacer"></span><button id="rtAddC" class="ghost small" data-i18n>+ Client</button></div>
+      <div class="rt-scroll"><table class="rt-t"><thead><tr><th data-i18n>Name</th><th data-i18n>Profile</th><th>Host</th><th data-i18n>Port</th><th>system_id</th><th data-i18n>Password</th><th title="Recipients with weights: 9053XXXXXXXX:70, 9054XXXXXXXX:30 (X = random digit)" data-i18n-attr="title"><span data-i18n>Prefix mix</span></th><th data-i18n>Sessions</th><th>Window</th><th>TPS</th><th></th></tr></thead><tbody id="rtC"></tbody></table></div>
+      <div class="lrow rt-common">
+        <label><span data-i18n>Test name</span> <input id="rtName" placeholder="(optional)" data-i18n-attr="placeholder" spellcheck="false"></label>
+        <label><span data-i18n>Duration (s)</span> <input id="rtDuration" type="number" value="60" min="5"></label>
+        <label><span>Ramp-up (s)</span> <input id="rtRamp" type="number" value="5" min="0"></label>
+        <label><span data-i18n>DLR wait (s)</span> <input id="rtDlrWait" type="number" value="15" min="0"></label>
+        <label class="grow"><span data-i18n>Message</span> <input id="rtText" value="Routing test" spellcheck="false"></label>
+        <label class="check"><input id="rtDlr" type="checkbox" checked> <span data-i18n>Request DLR</span></label>
+      </div>
+      <div class="opts">
+        <span id="rtPhase" class="muted"></span>
+        <span class="spacer"></span>
+        <button id="rtReport" class="ghost" style="display:none" data-i18n>Open report</button>
+        <button id="rtStop" class="ghost" disabled data-i18n>Stop</button>
+        <button id="rtStart" class="primary" data-i18n>Start test</button>
+      </div>
+    </section>
+    <div class="lbody">
+      <div class="rt-live">
+        <table><thead><tr><th data-i18n>Client</th><th data-i18n>Status</th><th class="r" data-i18n>Sending</th><th class="r" data-i18n>Accepted</th><th class="r">p95 ms</th><th class="r">Throttle</th><th class="r" data-i18n>Errors</th><th class="r" data-i18n>Sent</th><th class="r">DLR</th></tr></thead><tbody id="rtLiveC"><tr><td colspan="9" class="muted">—</td></tr></tbody></table>
+        <table><thead><tr><th>Vendor</th><th class="r" data-i18n>Binds</th><th class="r" data-i18n>Received / s</th><th class="r" data-i18n>Received</th><th class="r" data-i18n>End-to-end p95</th><th class="r" data-i18n>Misrouted</th></tr></thead><tbody id="rtLiveV"><tr><td colspan="6" class="muted">—</td></tr></tbody></table>
+      </div>
+      <pre id="rtLog" class="rt-log"></pre>
+    </div>
+  </div>
   <div class="view" id="view-reports">
     <div class="rbar">
       <span class="muted small" data-i18n>A report is saved automatically when each load test finishes. Click a row to open it.</span>
@@ -262,6 +294,7 @@
 <script src="web-api.js"></script>
 <script src="renderer.js"></script>
 <script src="load.js"></script>
+<script src="routing.js"></script>
 <script src="reports-ui.js"></script>
 <script src="vendor-msgs.js"></script>
 </body>
