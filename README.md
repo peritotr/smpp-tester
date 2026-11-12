@@ -6,7 +6,7 @@
 
 **Find out where your SMS platform starts to slow down — before your customers do.**
 
-An SMPP test client, a 10,000 TPS load generator and a mock SMSC in one tool.<br>
+An SMPP test client, a 20,000 TPS load generator and a mock SMSC in one tool.<br>
 It plays **both ends** of your platform at once and writes the performance report for you.
 
 [![CI](https://github.com/peritotr/smpp-tester/actions/workflows/ci.yml/badge.svg)](https://github.com/peritotr/smpp-tester/actions/workflows/ci.yml)
@@ -37,11 +37,11 @@ SMPP Tester (client) ──submit_sm──▶  YOUR PLATFORM  ──submit_sm─
           ◀────────── DLR ─────────                ◀──── DLR ─────
 ```
 
-When the run ends, you don't get a wall of numbers. You get a report that says, in plain language, *"the platform is clean up to 6,000 TPS; latency rose at the 7,000 TPS step; likely cause: backpressure — responses slowed down and the window filled up"*, with the charts to back it up.
+When the run ends, you don't get a wall of numbers. You get a report that says, in plain language, *"the platform is clean up to 6,000 TPS; latency rose at the 7,000 TPS step; likely cause: the window filled up"*, with the charts to back it up.
 
 ### Highlights
 
-- **10,000 TPS with DLRs** from a 2-vCPU machine, with client and mock vendor on the same box
+- **20,000 TPS with DLRs** from a 2-vCPU machine, with client and mock vendor on the same box
 - **Step tests** that find the knee point automatically
 - **End-to-end tracking** through your platform: loss, duplicates, latency
 - **A mock vendor you can misbehave on purpose**: throttling, slow responses, failing DLRs, a queue that backs up
@@ -61,7 +61,7 @@ When the run ends, you don't get a wall of numbers. You get a report that says, 
 - **Step test**: climbs from a start TPS to a target in steps to find the knee point
 - Automatic slow-down and retry on `ESME_RTHROTTLED` / `ESME_RMSGQFUL`
 - Random recipients (`4477009XXXXX`), live TPS and latency charts (p50/p95/p99), error code and DLR status breakdown
-- Sustains 10,000 TPS with DLRs on a 2-vCPU machine (client and mock vendor on the same box)
+- Sustains 20,000 TPS with DLRs on a 2-vCPU machine (client and mock vendor on the same box)
 
 **Built-in vendor (mock SMSC)**
 - Your platform binds to it as a supplier; it accepts messages and returns DLRs
@@ -267,7 +267,7 @@ flowchart LR
 
 **Measurement stays honest.** The load engine and the mock vendor each run in their own process (Electron `utilityProcess` on desktop, `child_process.fork` on the server). Each gets its own CPU core, and the UI can never slow the measurement down.
 
-**How it reaches 10k TPS in JavaScript:**
+**How it reaches 20k TPS in JavaScript:**
 - Each test message is encoded **once** into a PDU template. Per message, the engine only patches the bytes that change: sequence number, random recipient digits, end-to-end marker. That avoids building objects for every message.
 - A **token bucket** ticks every 2 ms. Writes are batched per socket and flushed with a single `socket.write`.
 - The **window** is enforced per session, so the engine never floods a platform that has stopped answering. Throttle responses shrink the rate multiplicatively, and it recovers over 3 s.
