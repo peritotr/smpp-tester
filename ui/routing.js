@@ -54,14 +54,35 @@
   $('rtAddC').onclick = () => { if (F.clients.length < MAX) { F.clients.push(newC(F.clients.length)); save(); table('c'); } };
 
   // ---------- Run ----------
-  let running = false, reportId = null;
+  let running = false, reportId = null, vUp = false;
   function setRunning(r) {
     running = r;
     $('rtStart').disabled = r; $('rtStop').disabled = !r;
     document.querySelectorAll('#view-routing .compose input, #view-routing .compose select, #rtV button, #rtC button').forEach(e => e.disabled = r);
-    if (!r) { $('rtAddV').disabled = F.vendors.length >= MAX; $('rtAddC').disabled = F.clients.length >= MAX; } else { $('rtAddV').disabled = $('rtAddC').disabled = true; }
+    // While the vendors are up their settings are fixed (the platform is bound to them)
+    if (vUp) document.querySelectorAll('#rtV input, #rtV button').forEach(e => e.disabled = true);
+    if (!r) { $('rtAddV').disabled = vUp || F.vendors.length >= MAX; $('rtAddC').disabled = F.clients.length >= MAX; } else { $('rtAddV').disabled = $('rtAddC').disabled = true; }
+    $('rtVendors').disabled = r;
+    $('rtVendors').textContent = vUp ? t('Stop vendors') : t('Start vendors');
+    $('rtVendors').classList.toggle('primary', !vUp && !r);
     if (r) $('rtReport').style.display = 'none';
   }
+  function vendorsState(m) {
+    vUp = !!(m && m.up);
+    const L = (m && m.list) || [];
+    $('rtVState').innerHTML = vUp ? L.map(v => `<span class="${v.conns ? 'ok' : 'warn'}">${esc(v.name)} ${v.conns ? '✓ ' + esc(t('bound')) : '○ ' + esc(t('waiting for bind'))}</span>`).join(' · ') : '';
+    if (vUp && !running) $('rtLiveV').innerHTML = L.map(v => `<tr><td>${esc(v.name)}</td><td class="r ${v.conns ? 'ok' : 'warn'}">${v.conns}</td><td class="r">—</td><td class="r">—</td><td class="r">—</td><td class="r">—</td></tr>`).join('');
+    setRunning(running);
+  }
+  $('rtVendors').onclick = async () => {
+    $('rtVendors').disabled = true;
+    const wasUp = vUp;
+    const r = wasUp ? await api.routingVendorsStop() : await api.routingVendorsStart({ vendors: F.vendors.map(v => ({ ...v })), clients: F.clients.map(c => ({ dst: c.dst })) });
+    $('rtVendors').disabled = false;
+    if (!r || !r.ok) phase(r && r.key ? { key: r.key, p: r.p } : { text: t('Error: {msg}', { msg: r && r.error }) }, 'err');
+    else phase(wasUp ? '' : t('Vendors are up: add them on your platform and wait until each shows "bound".'));
+  };
+  api.on('routing:vendors', vendorsState);
   const phase = (m, cls) => { $('rtPhase').textContent = m ? tm(m) : ''; $('rtPhase').className = cls || 'muted'; };
   const log = m => { const el = $('rtLog'); el.textContent = `${new Date().toLocaleTimeString(I18N.locale)}  ${m}\n` + el.textContent.slice(0, 20000); };
 
@@ -70,7 +91,7 @@
     if (miss) { alert(t('{name}: enter the host and the prefix mix.', { name: miss.name })); return; }
     const spec = {
       name: val('rtName').trim(), duration: Number(val('rtDuration')) || 60, ramp: Number(val('rtRamp')) || 0, dlrWait: Number(val('rtDlrWait')) || 0,
-      dlr: val('rtDlr'), text: val('rtText') || 'Routing test', respTimeout: 10,
+      dlr: val('rtDlr'), text: val('rtText') || 'Routing test', respTimeout: 10, bindWait: 30,
       vendors: F.vendors.map(v => ({ ...v })), clients: F.clients.map(c => ({ ...c, bindMode: 'trx' })),
     };
     $('rtLog').textContent = ''; $('rtLiveC').innerHTML = $('rtLiveV').innerHTML = '';
@@ -81,7 +102,7 @@
   $('rtStop').onclick = () => { api.routingStop(); phase('Stopping… (press again to finish without waiting)'); };
   $('rtReport').onclick = () => reportId && api.reportOpen(reportId);
 
-  const PH = { idle: '—', binding: 'Binding…', running: 'Sending', draining: 'Waiting for responses and DLRs…', done: 'Done', error: 'Error' };
+  const PH = { idle: '—', waiting: 'Waiting for binds…', binding: 'Binding…', running: 'Sending', draining: 'Waiting for responses and DLRs…', done: 'Done', error: 'Error' };
   api.on('routing:phase', m => {
     if (m.phase === 'error') { setRunning(false); phase(m.key ? m : { text: m.text }, 'err'); }
     else if (m.phase === 'done') { setRunning(false); }
@@ -108,6 +129,7 @@
   });
   // Web version: the test keeps running on the server when the page reloads
   window.onRoutingSync = st => {
+    if (st.vendors) vendorsState(st.vendors);
     if (['starting', 'running', 'finishing'].includes(st.phase)) { setRunning(true); phase(st); }
     if (st.reportId && st.phase === 'done') { reportId = st.reportId; $('rtReport').style.display = ''; }
   };

@@ -21,30 +21,62 @@ class RoutingRun extends EventEmitter {
   _phase(phase, key, p) { this.phase = phase; this.emit('phase', { phase, key, p, text: key && err(key, p).message }); }
   _log(key, p) { const m = { key, p, text: err(key, p).message }; this.events.push({ t: this.t0 ? Math.round((Date.now() - this.t0) / 100) / 10 : 0, type: 'log', ...m }); this.emit('log', m); }
 
-  _check(spec) {
-    const V = (spec.vendors || []).filter(v => v && Number(v.port)), C = (spec.clients || []).filter(c => c && c.host && dstList(c.dst).length);
-    if (!V.length || !C.length) throw err('Add at least one vendor and one client');
-    if (V.length > MAX || C.length > MAX) throw err('At most {n} vendors and {n} clients', { n: MAX });
+  _checkVendors(spec) {
+    const V = (spec.vendors || []).filter(v => v && Number(v.port));
+    if (!V.length) throw err('Add at least one vendor and one client');
+    if (V.length > MAX) throw err('At most {n} vendors and {n} clients', { n: MAX });
     const ports = V.map(v => Number(v.port));
     if (new Set(ports).size !== ports.length) throw err('Each vendor needs its own port');
     const sids = V.map(v => String(v.systemId || '').trim());
     if (sids.some(s => !s)) throw err('Each vendor needs a system_id');
     if (new Set(sids).size !== sids.length) throw err('Each vendor needs its own system_id');
+    return V;
+  }
+  _check(spec) {
+    const V = this._checkVendors(spec), C = (spec.clients || []).filter(c => c && c.host && dstList(c.dst).length);
+    if (!C.length) throw err('Add at least one vendor and one client');
+    if (C.length > MAX) throw err('At most {n} vendors and {n} clients', { n: MAX });
     return { V, C };
   }
+  // Same vendor settings → the running vendors can be reused (the platform stays bound to them)
+  _vkey(V) { return JSON.stringify(V.map(v => [Number(v.port), String(v.systemId).trim(), v.password || '', v.bindHost || '0.0.0.0', Number(v.respDelay) || 0, Number(v.dlrDelay ?? 1000), Number(v.failPct) || 0, Number(v.maxTps) || 0, v.name || ''])); }
+  get vendorsUp() { return !!(this.vendors && this.vendors.length && this.vendors.every(v => v.proc)); }
 
-  async start(spec) {
+  // Start the vendors on their own, so the platform can bind to them before the test (and stay bound between tests)
+  async startVendors(spec) {
     if (this.running) throw err('A routing test is already running');
-    const { V, C } = this._check(spec);
-    this.running = true; this.stopping = false; this.events = []; this.t0 = 0;
-    this.spec = spec;
-    const prefixes = [...new Set([...V.flatMap(v => list(v.prefixes).map(normNum)), ...C.flatMap(c => dstList(c.dst).map(prefixOf))].filter(Boolean))];
-    this.vendors = V.map((v, i) => ({ i, def: v, name: v.name || 'Vendor ' + String.fromCharCode(65 + i), expect: list(v.prefixes).map(normNum).filter(Boolean), stats: null, rx: [], proc: null }));
-    this.clients = C.map((c, i) => ({ i, tag: i + 1, def: c, name: c.name || 'Client ' + (i + 1), phase: 'idle', row: null, totals: null, done: null, proc: null }));
-    this.vSeries = [];
-    this._phase('starting', 'Starting {v} vendors…', { v: V.length });
+    const V = this._checkVendors(spec);
+    this.events = this.events || [];
+    await this._startVendors(V, spec, true);
+    this._vtick(true);
+    return this.vendorList();
+  }
+  stopVendors() {
+    if (this.running) throw err('A routing test is already running');
+    this._killVendors(); this._vtick(false);
+  }
+  vendorList() { return (this.vendors || []).map(v => ({ name: v.name, port: Number(v.def.port), systemId: v.def.systemId, conns: v.stats ? v.stats.conns : 0 })); }
+  _killVendors() { for (const v of this.vendors || []) { try { v.proc && v.proc.kill(); } catch {} v.proc = null; } this.vendors = []; this.vkey = null; this.vendorsKeep = false; }
+  // While vendors run without a test: their bind count once a second (the UI shows whether the platform is bound)
+  _vtick(on) {
+    clearInterval(this.vtimer); this.vtimer = null;
+    if (on) this.vtimer = setInterval(() => { if (!this.running) this.emit('vendors', { up: this.vendorsUp, list: this.vendorList() }); }, 1000);
+    this.emit('vendors', { up: this.vendorsUp, list: this.vendorList() });
+  }
 
-    // Vendors first: they must be listening before the platform routes traffic to them
+  async _startVendors(V, spec, keep) {
+    const key = this._vkey(V);
+    const prefixes = [...new Set([...V.flatMap(v => list(v.prefixes).map(normNum)), ...(spec.clients || []).flatMap(c => dstList(c.dst).map(prefixOf))].filter(Boolean))];
+    const routing = v => ({ prefixes, expect: list(v.prefixes).map(normNum).filter(Boolean) });
+    if (this.vendorsUp && this.vkey === key) {
+      // Reuse: new prefixes, counters back to zero
+      this.vendors.forEach((v, k) => { v.def = V[k]; v.expect = routing(V[k]).expect; v.stats = null; v.proc.post({ type: 'routing', routing: routing(V[k]) }); v.proc.post({ type: 'reset' }); });
+      if (keep) this.vendorsKeep = true;
+      return false;
+    }
+    this._killVendors();
+    this.vkey = key; this.vendorsKeep = keep;
+    this.vendors = V.map((v, i) => ({ i, def: v, name: v.name || 'Vendor ' + String.fromCharCode(65 + i), expect: routing(v).expect, stats: null, proc: null }));
     try {
       await Promise.all(this.vendors.map(v => new Promise((resolve, reject) => {
         const d = v.def;
@@ -53,21 +85,44 @@ class RoutingRun extends EventEmitter {
           if (m.type === 'started') { clearTimeout(timer); resolve(); }
           else if (m.type === 'error') { clearTimeout(timer); reject(err('{name}: {msg}', { name: v.name, msg: (m.msg && m.msg.text) || m.text })); }
           else if (m.type === 'stats') v.stats = m.stats;
-          else if (m.type === 'log' && m.msg && /bound|disconnected/i.test(m.msg.key || '')) this.emit('vlog', { vendor: v.name, msg: m.msg });
+          else if (m.type === 'log' && m.msg && /^(Bound|Bind rejected)/.test(m.msg.key || '')) { this.emit('vlog', { vendor: v.name, msg: m.msg }); if (this.running) this.events.push({ t: this.t0 ? Math.round((Date.now() - this.t0) / 100) / 10 : 0, type: 'log', key: '{name}: {msg}', p: { name: v.name, msg: m.msg.text } }); }
         });
         v.proc.post({ type: 'start', opts: {
           port: Number(d.port), bindHost: d.bindHost || '0.0.0.0', systemId: String(d.systemId).trim(), password: d.password || '',
           respDelay: Number(d.respDelay) || 0, dlrDelay: Number(d.dlrDelay ?? 1000), failRate: Math.max(0, Math.min(1, (Number(d.failPct) || 0) / 100)),
-          maxTps: Number(d.maxTps) || 0, metricsPort: 0, metricsLog: false, stateDir: '',
-          routing: { prefixes, expect: v.expect },
+          maxTps: Number(d.maxTps) || 0, metricsPort: 0, metricsLog: false, stateDir: '', routing: routing(d),
         } });
       })));
-    } catch (e) { this._cleanup(); this.running = false; this._phase('error', e.key || e.message, e.p); return; }
+    } catch (e) { this._killVendors(); throw e; }
     this.vendors.forEach(v => this._log('{name} listening on port {port} (system_id {sid}), expects {pre}', { name: v.name, port: v.def.port, sid: v.def.systemId, pre: v.expect.join(', ') || '—' }));
+    return true;
+  }
+
+  async start(spec) {
+    if (this.running) throw err('A routing test is already running');
+    const { V, C } = this._check(spec);
+    this.running = true; this.stopping = false; this.events = []; this.t0 = 0;
+    this.spec = spec;
+    this.clients = C.map((c, i) => ({ i, tag: i + 1, def: c, name: c.name || 'Client ' + (i + 1), phase: 'idle', row: null, totals: null, done: null, proc: null }));
+    this.vSeries = [];
+    this._phase('starting', 'Starting {v} vendors…', { v: V.length });
+
+    // Vendors first, and the platform bound to them, before any traffic
+    try { await this._startVendors(V, spec, !!this.vendorsKeep); }
+    catch (e) { this.running = false; this._phase('error', e.key || e.message, e.p); return; }
+    const wait = Math.max(0, Number(spec.bindWait ?? 30)) * 1000, w0 = Date.now();
+    const unbound = () => this.vendors.filter(v => !(v.stats && v.stats.conns > 0));
+    if (unbound().length) {
+      this._phase('waiting', 'Waiting for your platform to bind to the vendors…');
+      while (unbound().length && Date.now() - w0 < wait && !this.stopping) await new Promise(r => setTimeout(r, 250));
+    }
+    for (const v of unbound()) this._log('{name}: your platform has not bound to this vendor; the test starts anyway', { name: v.name });
+    if (this.stopping) { this._finishAbort(); return; }
 
     // Then all clients at once
     this._phase('running', 'Sending');
     this.t0 = Date.now(); this.startedAt = this.t0;
+    clearInterval(this.vtimer); this.vtimer = null;
     for (const c of this.clients) {
       const d = c.def;
       c.proc = this.spawn('load-worker.js', m => this._onClient(c, m));
@@ -128,8 +183,12 @@ class RoutingRun extends EventEmitter {
 
   _cleanup() {
     clearInterval(this.timer); this.timer = null;
-    for (const x of [...(this.clients || []), ...(this.vendors || [])]) { try { x.proc && x.proc.kill(); } catch {} x.proc = null; }
+    for (const x of this.clients || []) { try { x.proc && x.proc.kill(); } catch {} x.proc = null; }
+    if (this.vendorsKeep) this._vtick(true); else this._killVendors();
   }
+  _finishAbort() { this._cleanup(); this.running = false; this.stopping = false; this._phase('done', 'Done'); }
+  // App or server shutting down
+  shutdown() { this.vendorsKeep = false; clearInterval(this.vtimer); this._cleanup(); }
 
   _report() {
     const S = this.spec, vendors = this.vendors, clients = this.clients;

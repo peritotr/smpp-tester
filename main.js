@@ -77,6 +77,7 @@ const routing = new RoutingRun((file, onMsg) => {
 routing.on('phase', m => send('routing:phase', m));
 routing.on('tick', m => send('routing:tick', m));
 for (const ev of ['log', 'vlog', 'clog']) routing.on(ev, m => send('routing:' + ev, m));
+routing.on('vendors', m => send('routing:vendors', m));
 routing.on('done', rep => {
   let entry = null;
   if (rep) try { entry = getReports().save(rep); send('report:saved', entry); } catch (e) { send('routing:log', { text: 'Could not save the report: ' + e.message }); }
@@ -84,6 +85,8 @@ routing.on('done', rep => {
 });
 ipcMain.handle('routing:start', async (_, spec) => { try { await routing.start(spec); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } });
 ipcMain.handle('routing:stop', () => { routing.stop(); return { ok: true }; });
+ipcMain.handle('routing:vendorsStart', async (_, spec) => { try { return { ok: true, list: await routing.startVendors(spec || {}) }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } });
+ipcMain.handle('routing:vendorsStop', () => { try { routing.stopVendors(); return { ok: true }; } catch (e) { return { ok: false, error: e.message, key: e.key, p: e.p }; } });
 
 function createWindow() {
   win = new BrowserWindow({
@@ -176,7 +179,7 @@ app.on('window-all-closed', () => {
   client.disconnect();
   if (mockProc) mockProc.kill();
   if (loadProc) loadProc.kill();
-  routing._cleanup();
+  routing.shutdown();
   app.quit();
 });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
