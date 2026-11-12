@@ -39,6 +39,8 @@ class LoadEngine extends EventEmitter {
       dlrRejectEvery: Math.max(0, Math.floor(Number(t.dlrRejectEvery) || 0)),
       dlrRejectStatus: Number(t.dlrRejectStatus ?? 0x14) >>> 0,
       e2e: !!t.e2e,
+      // Per-session window allowed by the gateway account (0 = not given); used in the window advice
+      gwWindow: Math.max(0, Math.floor(Number(t.gwWindow) || 0)),
       criteria: t.criteria || {},
     };
     // Step test: from the start TPS to the target TPS, fixed duration per step
@@ -80,7 +82,10 @@ class LoadEngine extends EventEmitter {
     this.startedAt = Date.now();
     this.t0 = now(); this.curStep = -1;
     this._event('start', '{n} sessions bound, sending started', { n: this.sessions.length });
+    if (this.t.gwWindow && this.t.window > this.t.gwWindow) this._event('window', "The window ({window}) is above the gateway account's window ({gw}): the gateway may hold back or reject what is above its limit.", { window: this.t.window, gw: this.t.gwWindow });
     if (failed.length) this._event('bindfail', '{failed}/{total} sessions could not bind; the test continued with {ok}.', { failed: failed.length, total: this.t.sessions, ok: this.sessions.length, reason: failed[0] }); this.lastTick = this.t0; this.allow = 0; this.secT = this.t0;
+    // Steady-state TPS counts from the end of the ramp-up (no ramp-up: from the start)
+    this.rampEnd = this.t.ramp && !this.t.steps ? null : { t: this.t0, sent: 0 }; this.winSecs = 0;
     this.tick = setInterval(() => this._pump(), 2);
     this.secTimer = setInterval(() => this._second(), 1000);
   }
@@ -173,6 +178,7 @@ class LoadEngine extends EventEmitter {
     if (this.rateFactor < 1) this.rateFactor = Math.min(1, this.rateFactor + el / 3000); // back to full speed within 3 s
     const target = this._target(elapsed);
     const rate = target * rampF * this.rateFactor;
+    if (!this.rampEnd && rampF >= 1) this.rampEnd = { t, sent: this.G.sent };
     this.allow = Math.min(this.allow + rate * el / 1000, Math.max(1, rate * 0.02));
 
     const doneNew = (this.t.total && this.G.sent - this.G.retries >= this.t.total) || (this.t.duration && elapsed >= this.t.duration * 1000);
@@ -316,15 +322,41 @@ class LoadEngine extends EventEmitter {
       p50: l.p50, p95: l.p95, p99: l.p99, max: l.max, dlrP50: d.p50, dlrP95: d.p95,
     };
     this.series.push(row);
+    this._windowCheck(row, l);
     this.S = this._emptySec();
     this.emit('tick', { row, totals: this._totals() });
     if (this.drainUntil && (t >= this.drainUntil || (row.inflight === 0 && (!this.t.dlr || this.G.dlr >= this.G.ok)))) this._finish();
   }
 
+  // Sending held back by the window: below the target while every session had `window` submit_sm waiting for a
+  // response. Three such seconds in a row → one event with the window needed for the target, from the measured
+  // response time: target × p95 ÷ sessions, +20% headroom. Also compared with the gateway account's window.
+  _windowCheck(row, l) {
+    if (!this.tick || !this.rampEnd || row.target < 10) { this.winSecs = 0; return; }
+    const held = row.windowFull >= 0.1 && row.sentTps < row.target * 0.98 && !row.thrTps;
+    this.winSecs = held ? this.winSecs + 1 : 0;
+    if (this.winSecs < 3 || !l.p95) return;
+    const sessions = row.bound || this.sessions.length, w = this.t.window, gw = this.t.gwWindow;
+    const byLatency = row.target * l.p95 / 1000 / sessions * 1.2;
+    const byRate = w * row.target / Math.max(1, row.sentTps);   // what the measured rate says
+    const need = Math.ceil(Math.max(byLatency, byRate, w + 1) / 10) * 10;
+    const a = { t: row.t, target: row.target, sent: Math.round(row.sentTps), sessions, window: w, p95: Math.round(l.p95), need, gwWindow: gw || null, gwTooLow: !!(gw && need > gw) };
+    const prev = this.G.windowAdvice;
+    if (!prev || need > prev.need) this.G.windowAdvice = a;
+    if (prev) return;
+    const p = { sent: a.sent, target: a.target, sessions, window: w, p95: a.p95, need, gw };
+    this._event('window', 'Rate held back by the window: {sent} of {target} TPS, all {sessions} sessions had {window} submit_sm waiting (response p95 {p95} ms). Window needed ≈ {need} per session.', p);
+    if (a.gwTooLow) this._event('window', "That is above the gateway account's window ({gw}): raise the gateway account's window setting too.", p);
+    else if (!gw) this._event('window', "Check that the gateway account's window allows {need} per session as well.", p);
+  }
+
   _totals() {
-    const secs = ((this.sendEnd || now()) - this.t0) / 1000;
+    const end = this.sendEnd || now(), secs = (end - this.t0) / 1000;
     const bound = this.sessions.filter(s => s.bound).length;
-    return { ...this.G, bound, secs, avgTps: this.G.sent / Math.max(secs, 0.001), lat: this.latAll.summary(), dlrLat: this.dlrAll.summary(), pendingDlr: this.pendingDlr.size };
+    const rs = this.rampEnd && end - this.rampEnd.t >= 1000 ? (end - this.rampEnd.t) / 1000 : 0;
+    return { ...this.G, bound, secs, avgTps: this.G.sent / Math.max(secs, 0.001),
+      // Steady-state TPS: after the ramp-up (= avgTps without ramp-up); not for step tests
+      steadyTps: rs && !this.t.steps ? (this.G.sent - this.rampEnd.sent) / rs : null, steadySecs: rs || 0, lat: this.latAll.summary(), dlrLat: this.dlrAll.summary(), pendingDlr: this.pendingDlr.size };
   }
 
   _finishSending() {

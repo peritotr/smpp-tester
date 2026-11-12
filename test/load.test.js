@@ -62,3 +62,26 @@ test('step test: the analysis finds the saturation point', async t => {
   assert.ok(a.onset, 'latency onset detected');
   assert.equal(a.verdict, 'fail');
 });
+
+test('window too small for the response time: rate held back, window advice with the gateway limit; steady TPS excludes the ramp-up', async t => {
+  const port = freePort();
+  const v = await startVendor({ port, respDelay: 100, dlrDelay: 0 });
+  t.after(() => v.kill());
+  // 2 sessions × window 10 at ~100 ms → at most ~200 TPS for a 400 TPS target; the gateway account allows 15
+  const r = await runLoad(cfgFor(port), { ...BASE, dlr: false, sessions: 2, window: 10, gwWindow: 15, tps: 400, duration: 8, ramp: 2 });
+  const T = r.done.totals, a = T.windowAdvice;
+  assert.ok(a, 'window advice in the totals');
+  assert.ok(a.need >= 20 && a.need <= 40, `needed window ${a.need}`);
+  assert.equal(a.gwTooLow, true);
+  const ev = r.done.events.filter(e => e.type === 'window').map(e => e.key);
+  assert.ok(ev.some(k => /^Rate held back by the window/.test(k)));
+  assert.ok(ev.some(k => /raise the gateway account's window setting too/.test(k)));
+  assert.ok(T.steadyTps > 150 && T.steadyTps < 230, `steady ${T.steadyTps}`);
+  assert.ok(analyze({ test: r.done.test, totals: T, series: r.done.series, events: r.done.events }).findings.some(f => /held back by the window/.test(f.text)));
+
+  const r2 = await runLoad(cfgFor(port), { ...BASE, dlr: false, sessions: 2, window: 100, tps: 400, duration: 6, ramp: 2 });
+  const T2 = r2.done.totals;
+  assert.equal(T2.windowAdvice, undefined, 'no advice when the window is large enough');
+  assert.ok(Math.abs(T2.steadyTps - 400) < 12, `steady ${T2.steadyTps}`);
+  assert.ok(T2.avgTps < T2.steadyTps * 0.9, `average incl. ramp-up ${T2.avgTps}`);
+});

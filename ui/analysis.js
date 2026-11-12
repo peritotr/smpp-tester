@@ -158,7 +158,7 @@
     const CAUSE = {
       throttle: 'throttle: the platform hit the customer TPS limit',
       sessions: 'session loss: some binds dropped',
-      backpressure: 'backpressure: platform responses slowed down and the window filled up',
+      backpressure: 'the window filled up: sessions × window is too small for the response time (or the platform slowed down)',
       errors: 'errors: the platform is rejecting submit_sm',
       client: 'the test server could not send at the target rate (CPU or network)',
     };
@@ -184,6 +184,9 @@
       else F('ok', t('Latency stayed flat for {min} minutes under steady load.', { min: r1(out.steady.minutes) }));
     }
     if (out.steady && out.steady.cv > 10 && !out.saturation) F('warn', t('Accepted TPS fluctuates (variation {cv}%); the platform or network responds unevenly.', { cv: r1(out.steady.cv) }));
+    const wa = T.windowAdvice;
+    if (wa) F('bad', t('Sending was held back by the window: {sent} of {target} TPS with {sessions} × {window} submit_sm waiting at a response p95 of {p95} ms. Use a window of ≈ {need} per session (target × p95 ÷ sessions, +20%).', wa)
+      + (wa.gwTooLow ? ' ' + t("That is above the gateway account's window ({gw}): raise the gateway account's window setting too.", { gw: wa.gwWindow }) : !wa.gwWindow ? ' ' + t("Check that the gateway account's window allows {need} per session as well.", wa) : ''));
     if (T.throttled) F('warn', t('{n} throttle responses received (first at {time}).', { n: r0(T.throttled), time: mmss((ev.find(e => e.type === 'throttle') || {}).t || 0) }));
     if (T.timeouts) F('bad', t('{n} submit_sm never got a response (timeout).', { n: r0(T.timeouts) }));
     const bf = ev.find(e => e.type === 'bindfail');

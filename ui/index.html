@@ -160,6 +160,7 @@
       <div class="lgrid">
         <label title="Number of parallel binds (sessions)" data-i18n-attr="title"><span data-i18n>Sessions</span> <input id="lSessions" type="number" value="8" min="1" max="64"></label>
         <label title="Max submit_sm in flight per session without a response" data-i18n-attr="title"><span>Window</span> <input id="lWindow" type="number" value="500" min="1" max="5000"></label>
+        <label title="Window allowed per session on the gateway account (0 = unknown); used in the window advice" data-i18n-attr="title"><span data-i18n>Gateway window</span> <input id="lGwWindow" type="number" value="0" min="0" max="100000"></label>
         <label><span data-i18n>Target TPS</span> <input id="lTps" type="number" value="1000" min="1" max="100000"></label>
         <label title="Step: climbs from the start TPS to the target in steps; the best way to find the load at which latency starts" data-i18n-attr="title"><span data-i18n>Test type</span> <select id="lMode"><option value="duration" data-i18n>Constant — duration</option><option value="total" data-i18n>Constant — count</option><option value="steps" data-i18n>Step</option></select></label>
         <label class="ls-fixed"><span id="lAmountLbl" data-i18n>Duration (s)</span> <input id="lAmount" type="number" value="60" min="1"></label>
@@ -170,6 +171,7 @@
         <label title="A submit_sm without a response within this time counts as a timeout" data-i18n-attr="title"><span data-i18n>Response limit (s)</span> <input id="lRespTimeout" type="number" value="10" min="1"></label>
         <label><span data-i18n>DLR wait (s)</span> <input id="lDlrWait" type="number" value="15" min="0"></label>
       </div>
+      <div id="lWinHint" class="winhint muted"></div>
       <div class="opts">
         <label class="check"><input id="lDlr" type="checkbox" checked> <span data-i18n>Request DLR</span></label>
         <label class="check" title="A #T… marker is appended to the message; the built-in vendor picks it up to measure end-to-end latency, loss and duplicates" data-i18n-attr="title"><input id="lE2e" type="checkbox"> <span data-i18n>Measure end-to-end (client → platform → vendor)</span></label>
@@ -196,7 +198,7 @@
       <div class="kpis">
         <div class="kpi big"><span data-i18n>Current send rate</span><b id="kSentTps">—</b><i>TPS</i></div>
         <div class="kpi big"><span data-i18n>Current success rate</span><b id="kOkTps">—</b><i>TPS</i></div>
-        <div class="kpi big"><span data-i18n>Average</span><b id="kAvgTps">—</b><i>TPS</i></div>
+        <div class="kpi big" title="Average from the end of the ramp-up; the second figure includes the ramp-up" data-i18n-attr="title"><span data-i18n>Average after ramp-up</span><b id="kAvgTps">—</b><i id="kAvgSub">TPS</i></div>
         <div class="kpi big"><span data-i18n>Response p50 / p95 / p99</span><b id="kLat">—</b><i>ms</i></div>
         <div class="kpi"><span data-i18n>Sent</span><b id="kSent">0</b></div>
         <div class="kpi"><span data-i18n>Accepted</span><b id="kOk" class="ok">0</b></div>
