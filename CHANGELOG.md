@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.0
+
+- **Worker threads** for the load test: the sessions and the target TPS are split over several threads (CPU cores), each with its own sessions and rate control. Setting *Worker threads*, 0 = automatic (one per core but one, at most one per session, at most 8). The threads start together; per-second figures, totals and latency percentiles are merged from their histograms; DLRs are matched to submits across threads, so a DLR that arrives on another thread's bind still counts with its latency
+- **Two latencies** instead of one: *server response* (submit_sm written to the socket → its response read) and *client queue* (queued → written). The window advice uses the server figure. Report, live view and CSV show both
+- **Event loop** delay p99 and busy share per second, in the live view, the report and the CSV. When sending stays below the target while the test machine's event loop is saturated (busy > 90% or delay p99 > 50 ms for 3 s), the test says the machine is the limit instead of advising a bigger window
+- Faster engine: submit_sm_resp, deliver_sm and enquire_link are decoded from the bytes instead of through the SMPP library's PDU objects. On a 2 vCPU machine, 20,000 TPS with DLRs used 3.0 CPU seconds instead of 6.9 for the same run; 35,000 TPS with DLRs ran at ~15% of one core
+- Token bucket carries up to 200 ms of permits (before 20 ms), so a short stall is made up afterwards
+- Backpressure: when a socket's buffer is full, that session takes no new messages until it drains
+- *DLR receiver binds*: optional extra receiver binds that only take DLRs (the sending binds then bind as transmitters)
+- Desktop app: packaged without asar so worker threads load from plain files
+
 ## 1.9.2
 
 - Routing test, **content check**: every message at a vendor is checked for an intact marker, the exact text that was sent and the same `data_coding`. The report shows per vendor the counts (intact, no marker, broken marker, text changed, `data_coding` changed), also when they are zero, with examples; any of them fails the test

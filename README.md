@@ -150,6 +150,17 @@ Without Docker: `npm install --omit=dev && UI_PASSWORD=... node server.js`.
 4. **Connect the client** (top left) to your platform with that customer and send a single message to check the path end to end.
 5. **Load test → Step**: start 500, increment 500, target 10,000, step 60 s, *Measure end-to-end* on. When it finishes, open the report.
 
+### Worker threads and what the latency figures mean
+
+A load test can use several CPU cores: **Worker threads** splits the sessions and the target TPS over that many threads, each with its own sessions and rate control (0 = automatic: one per core but one, at most one per session, at most 8). The threads start sending together; their per-second figures and histograms are merged, and DLRs are matched to submits across threads, because a platform may send a DLR on any bind. **DLR receiver binds** adds that many receiver binds that only take DLRs (the sending binds then bind as transmitters).
+
+The response time is split in two:
+
+- **Server response**: from writing the submit_sm to the socket until its submit_sm_resp is read. This is what the window advice uses.
+- **Client queue**: from queuing the message until it is written; the test machine's own share.
+
+The **event loop** delay (p99) and how busy it was are measured per thread every second. If sending stays below the target while a thread is busy more than 90% of the time or its delay p99 is above 50 ms, the test says the test machine is the limit (instead of advising a bigger window): use more worker threads or a bigger machine. In that case the server response time also includes the time the busy machine took to read the response.
+
 ### Choosing sessions and window
 
 The client can never send faster than `sessions × window ÷ response time`: every session holds at most *window* submit_sm waiting for a response. With 12 sessions, window 100 and 125 ms responses that is 9,600 TPS, whatever the target. So size the window per session to at least
@@ -309,7 +320,9 @@ flowchart LR
 
 **How it reaches 20k TPS in JavaScript:**
 - Each test message is encoded **once** into a PDU template. Per message, the engine only patches the bytes that change: sequence number, random recipient digits, end-to-end marker. That avoids building objects for every message.
-- A **token bucket** ticks every 2 ms. Writes are batched per socket and flushed with a single `socket.write`.
+- A **token bucket** ticks every 2 ms and can carry up to 200 ms of permits, so a short stall is made up. Writes are batched per socket and flushed with a single `socket.write`; when the socket's buffer is full the session waits for `drain`.
+- Responses and DLRs are decoded straight from the bytes (submit_sm_resp, deliver_sm, enquire_link) instead of building a library PDU object per message; on a 2 vCPU machine this cut the engine's CPU time per message by more than half.
+- Several **worker threads** can share the load (see *Worker threads* above).
 - The **window** is enforced per session, so the engine never floods a platform that has stopped answering. Throttle responses shrink the rate multiplicatively, and it recovers over 3 s.
 - The mock vendor skips the general-purpose PDU parser. It reads only the fields it needs straight from the TCP stream and coalesces responses per tick.
 - Latency is recorded into **logarithmic histograms** (~3% buckets), so p50/p95/p99 cost O(1) memory however long the test runs.
@@ -336,7 +349,8 @@ flowchart LR
 | Path | |
 | --- | --- |
 | `smpp-core.js` | Interactive SMPP client and encoding helpers |
-| `load-engine.js`, `load-worker.js` | Load engine (own process): sessions, windowing, token-bucket rate control, histograms |
+| `load-engine.js`, `load-worker.js` | Load engine (own process): sessions, windowing, token-bucket rate control, fast PDU decoding, histograms |
+| `load-cluster.js`, `load-shard.js` | Load test over several worker threads: split, start together, merge rows and histograms, match DLRs across threads |
 | `routing-run.js` | Routing test: starts the vendors and clients, builds the client × prefix × vendor report |
 | `mock-smsc.js`, `mock-worker.js` | Mock vendor on raw sockets (own process) |
 | `dlr-journal.js`, `dlr-journal-worker.js` | Keeps undelivered DLRs on disk so they survive a vendor restart (file work in a worker thread) |
