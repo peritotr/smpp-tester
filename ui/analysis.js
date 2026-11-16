@@ -84,6 +84,7 @@
       else if (lost) cause = 'sessions';
       else if (wf > 0.3) cause = 'backpressure';
       else if (sum(win.map(x => x.errTps)) > 0) cause = 'errors';
+      else if (win.some(x => x.elu >= 0.9 || x.loopP99 > 50)) cause = 'cpu';
       else cause = 'client';
       out.saturation = { t: r.t, ok: median(win.map(x => x.okTps)), target: r.target, cause, step: r.step };
     }
@@ -161,6 +162,7 @@
       backpressure: 'the window filled up: sessions × window is too small for the response time (or the platform slowed down)',
       errors: 'errors: the platform is rejecting submit_sm',
       client: 'the test server could not send at the target rate (CPU or network)',
+      cpu: "the test machine's CPU: its event loop was busy, so it could not send faster",
     };
     if (out.saturation) out.saturation.causeText = t(CAUSE[out.saturation.cause] || out.saturation.cause);
     if (out.steps && out.knee) {
@@ -187,6 +189,9 @@
     const wa = T.windowAdvice;
     if (wa) F('bad', t('Sending was held back by the window: {sent} of {target} TPS with {sessions} × {window} submit_sm waiting at a response p95 of {p95} ms. Use a window of ≈ {need} per session (target × p95 ÷ sessions, +20%).', wa)
       + (wa.gwTooLow ? ' ' + t("That is above the gateway account's window ({gw}): raise the gateway account's window setting too.", { gw: wa.gwWindow }) : !wa.gwWindow ? ' ' + t("Check that the gateway account's window allows {need} per session as well.", wa) : ''));
+    if (T.cpuLimit) F('bad', t('The test machine was the limit: {sent} of {target} TPS while its event loop was {elu}% busy (delay p99 {ms} ms). The measured response times include its own delay. Use more worker threads or a bigger machine.', { sent: r0(T.cpuLimit.sent), target: r0(T.cpuLimit.target), elu: T.cpuLimit.elu, ms: T.cpuLimit.loopP99 }));
+    else if (T.loop && T.loop.busySecs) F('warn', t("The test machine's event loop was busy or delayed in {n} seconds (delay p99 up to {ms} ms); response times in those seconds include its own delay.", { n: r0(T.loop.busySecs), ms: r1(T.loop.p99Max) }));
+    if (T.qLat && T.qLat.n && T.lat && T.lat.n) F('ok', t('Server response p95 {srv} ms; the test machine added {q} ms (client queue p95), event loop delay p99 up to {loop} ms{workers}.', { srv: r1(T.lat.p95), q: r1(T.qLat.p95), loop: r1(T.loop ? T.loop.p99Max : 0), workers: T.workers > 1 ? t(', {n} worker threads', { n: T.workers }) : '' }));
     if (T.throttled) F('warn', t('{n} throttle responses received (first at {time}).', { n: r0(T.throttled), time: mmss((ev.find(e => e.type === 'throttle') || {}).t || 0) }));
     if (T.timeouts) F('bad', t('{n} submit_sm never got a response (timeout).', { n: r0(T.timeouts) }));
     const bf = ev.find(e => e.type === 'bindfail');

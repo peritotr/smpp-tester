@@ -3,7 +3,9 @@
 //
 // User-facing messages are English templates ({key, p}) so the UI can translate them.
 const EventEmitter = require('events');
+const { monitorEventLoopDelay, performance } = require('perf_hooks');
 const smpp = require('smpp');
+const { PDU } = require('smpp/lib/pdu');
 const defs = require('smpp/lib/defs');
 const { analyze } = require('./smpp-core');
 
@@ -11,6 +13,8 @@ const STATUS_NAME = {}; for (const [k, v] of Object.entries(defs.errors)) STATUS
 const sname = s => STATUS_NAME[s] || '0x' + s.toString(16).padStart(8, '0');
 const THROTTLE = new Set([0x58, 0x14]); // ESME_RTHROTTLED, ESME_RMSGQFUL
 const now = () => performance.now();
+// Wall clock with sub-ms resolution, the same in every thread (DLR matching across worker threads)
+const epoch = t => performance.timeOrigin + t;
 const fill = (s, p) => p ? s.replace(/\{(\w+)\}/g, (m, k) => p[k] !== undefined ? p[k] : m) : s;
 const msg = (key, p) => ({ key, p, text: fill(key, p) });
 const err = (key, p) => Object.assign(new Error(fill(key, p)), { key, p });
@@ -43,6 +47,12 @@ class LoadEngine extends EventEmitter {
       gwWindow: Math.max(0, Math.floor(Number(t.gwWindow) || 0)),
       // Routing test: client number 1–9, written into the end-to-end marker so each vendor knows which client a message came from
       clientTag: Math.max(0, Math.min(9, Math.floor(Number(t.clientTag) || 0))),
+      // Worker thread number 1–8 (several engines in one test, see load-cluster.js): keeps end-to-end markers unique
+      shardTag: Math.max(0, Math.min(9, Math.floor(Number(t.shardTag) || 0))),
+      // Run as one of several engines: DLRs matched by the coordinator, raw histograms in each row, wait for "go" after binding
+      shard: !!t.shard,
+      // Extra receiver binds that only take DLRs; the sending binds are then transmitters
+      rxSessions: Math.max(0, Math.min(32, Math.floor(Number(t.rxSessions) || 0))),
       criteria: t.criteria || {},
     };
     // Step test: from the start TPS to the target TPS, fixed duration per step
@@ -62,7 +72,10 @@ class LoadEngine extends EventEmitter {
     this.G = { sent: 0, ok: 0, err: 0, timeouts: 0, throttled: 0, retries: 0, dlr: 0, dlrOk: 0, dlrFail: 0, dlrUnmatched: 0, windowFullMs: 0, errs: {}, dlrStats: {}, okByDst: {} };
     this.unmatchedIds = [];
     this.S = this._emptySec();
-    this.latAll = new Hist(); this.dlrAll = new Hist();
+    this.latAll = new Hist(); this.dlrAll = new Hist(); this.qAll = new Hist();
+    this.batch = { sub: [], dlr: [] }; this.remoteDone = false;
+    this.loop = monitorEventLoopDelay({ resolution: 10 }); this.loop.enable(); this.elu = performance.eventLoopUtilization();
+    this.loopAll = { p99Max: 0, eluSum: 0, eluN: 0, eluMax: 0, busySecs: 0 };
     this.pendingDlr = new Map(); this.earlyDlr = new Map();
     this.retryQ = 0; this.rateFactor = 1;
     this.series = [];
@@ -70,8 +83,11 @@ class LoadEngine extends EventEmitter {
     this.emit('phase', { phase: 'binding', ...msg('Binding {n} sessions…', { n: this.t.sessions }) });
     // Binds have a response deadline; if some fail, the test continues with the ones that bound
     this.binding = true; this.aborted = false; this.allSessions = [];
-    const res = await Promise.allSettled(Array.from({ length: this.t.sessions }, (_, i) =>
-      new Promise(r => setTimeout(r, i * 100)).then(() => this.aborted ? Promise.reject(err('Stopped')) : this._openSession(i))));
+    this.rxList = [];
+    const nAll = this.t.sessions + this.t.rxSessions;
+    const res = await Promise.allSettled(Array.from({ length: nAll }, (_, i) =>
+      new Promise(r => setTimeout(r, i * 100)).then(() => this.aborted ? Promise.reject(err('Stopped')) : this._openSession(i, i >= this.t.sessions))));
+    if (this.rxList.length < this.t.rxSessions && this.t.rxSessions) this.emit('log', msg('{ok} of {n} DLR receiver sessions bound', { ok: this.rxList.length, n: this.t.rxSessions }));
     this.binding = false;
     if (this.aborted) return;
     const failedErr = res.filter(r => r.status === 'rejected').map(r => r.reason || {});
@@ -80,6 +96,12 @@ class LoadEngine extends EventEmitter {
       this._closeAll(); this.running = false;
       const e0 = failedErr[0];
       this.emit('phase', { phase: 'error', ...(e0 && e0.key ? msg(e0.key, e0.p) : e0 && e0.message ? { text: e0.message } : msg('No session could bind')) }); return;
+    }
+    // One of several engines: wait until every engine has bound, so they all start together
+    if (this.t.shard) {
+      this.emit('ready', { bound: this.sessions.length, failed: failed.length, reason: failed[0] });
+      await new Promise(r => { this._go = r; });
+      if (this.aborted) return;
     }
     this.emit('phase', { phase: 'running', ...msg('Sending') });
     this.startedAt = Date.now();
@@ -91,6 +113,17 @@ class LoadEngine extends EventEmitter {
     this.rampEnd = this.t.ramp && !this.t.steps ? null : { t: this.t0, sent: 0 }; this.winSecs = 0;
     this.tick = setInterval(() => this._pump(), 2);
     this.secTimer = setInterval(() => this._second(), 1000);
+    if (this.t.shard) this.batchTimer = setInterval(() => this._sendBatch(), 50);
+    this.loop.reset(); this.elu = performance.eventLoopUtilization();
+  }
+  go() { if (this._go) { const g = this._go; this._go = null; g(); } }
+  // Coordinator: every DLR is in, the engine may finish once its responses are in too
+  dlrDone() { this.remoteDone = true; }
+
+  // Sharded run: submit_sm_resp message_ids and DLRs go to the coordinator, which matches them across engines
+  _sendBatch() {
+    const B = this.batch; if (!B.sub.length && !B.dlr.length) return;
+    this.batch = { sub: [], dlr: [] }; this.emit('dlrBatch', B);
   }
 
   _buildTemplates(t) {
@@ -141,7 +174,7 @@ class LoadEngine extends EventEmitter {
     });
   }
 
-  _openSession(i) {
+  _openSession(i, rx) {
     const cfg = this.cfg;
     return new Promise((resolve, reject) => {
       const s = smpp.connect({
@@ -149,7 +182,7 @@ class LoadEngine extends EventEmitter {
         rejectUnauthorized: !!cfg.verifyCert, connectTimeout: (Number(cfg.connectTimeout) || 10) * 1000,
         auto_enquire_link_period: (Number(cfg.enquireLink) || 30) * 1000,
       });
-      const st = { s, i, inflight: 0, bound: false, sent: new Map(), out: [], flushQ: false };
+      const st = { s, i, rx, inflight: 0, bound: false, sent: new Map(), out: [], outRecs: [], flushQ: false, wblocked: false };
       this.allSessions.push(s);
       let settled = false;
       // Don't wait forever if the platform never answers the bind (typically when its bind limit is reached)
@@ -161,9 +194,11 @@ class LoadEngine extends EventEmitter {
       });
       s.on('close', () => { const was = st.bound; st.bound = false; if (this.running && !this.stopping && was) this._event('session', 'Session {n} disconnected', { n: i + 1 }); });
       s.on('enquire_link', p => s.send(p.response()));
-      s.on('deliver_sm', p => this._onDeliver(st, p));
+      // Before the fast reader takes over (right after the bind) a deliver_sm still comes from the library
+      s.on('deliver_sm', p => { const m = p.short_message && p.short_message.message; this._onDeliver(st, { seq: p.sequence_number, esm: p.esm_class, src: p.source_addr, rid: p.receipted_message_id || '', state: p.message_state, sm: Buffer.isBuffer(m) ? m : Buffer.from(String(m || ''), 'latin1') }); });
       s.on(cfg.tls ? 'secureConnect' : 'connect', () => {
-        const fn = { trx: 'bind_transceiver', tx: 'bind_transmitter', rx: 'bind_transceiver' }[cfg.bindMode || 'trx'];
+        // With DLR receiver sessions: those bind as receivers, the sending ones as transmitters
+        const fn = rx ? 'bind_receiver' : this.t.rxSessions ? 'bind_transmitter' : { trx: 'bind_transceiver', tx: 'bind_transmitter', rx: 'bind_transceiver' }[cfg.bindMode || 'trx'];
         s[fn]({
           system_id: cfg.systemId || '', password: cfg.password || '', system_type: cfg.systemType || '',
           interface_version: Number(cfg.interfaceVersion || 0x34), addr_ton: Number(cfg.addrTon || 0), addr_npi: Number(cfg.addrNpi || 0),
@@ -171,14 +206,80 @@ class LoadEngine extends EventEmitter {
         }, r => {
           if (settled) return; settled = true; clearTimeout(timer);
           if (this.aborted) { s.close(); return reject(err('Stopped')); }
-          if (r.command_status === 0) { st.bound = true; this.sessions.push(st); resolve(); }
+          if (r.command_status === 0) {
+            st.bound = true; (rx ? this.rxList : this.sessions).push(st);
+            // From here on PDUs are read by the engine's own decoder (stop the library's read loop first)
+            s.paused = true; setImmediate(() => this._fastRead(st));
+            resolve();
+          }
           else { s.close(); reject(err('Session {n} bind rejected: {status}', { n: i + 1, status: sname(r.command_status) })); }
         });
       });
     });
   }
 
-  _emptySec() { return { sent: 0, ok: 0, err: 0, thr: 0, dlr: 0, lat: new Hist(), dlrLat: new Hist() }; }
+  // Fast PDU reader: submit_sm_resp, deliver_sm and enquire_link are decoded straight from the bytes (the library
+  // builds a full PDU object per message and reads the socket once per PDU); anything else goes the library's way.
+  _fastRead(st) {
+    const sock = st.s.socket; if (!sock || st.s.closed) return;
+    sock.removeAllListeners('readable');
+    let buf = null;
+    const onData = chunk => {
+      buf = buf ? Buffer.concat([buf, chunk]) : chunk;
+      let o = 0;
+      while (buf.length - o >= 16) {
+        const len = buf.readUInt32BE(o);
+        if (len < 16 || len > 70000) { this.emit('log', msg('Session {n}: invalid PDU length {len}, closing', { n: st.i + 1, len })); sock.destroy(); return; }
+        if (buf.length - o < len) break;
+        try { this._pdu(st, buf, o, len); } catch (e) { this.emit('log', msg('Session {n} error: {msg}', { n: st.i + 1, msg: e.message })); }
+        o += len;
+      }
+      buf = o >= buf.length ? null : buf.subarray(o);
+    };
+    let c; while ((c = sock.read()) !== null) onData(c);   // what the library left in the stream buffer
+    sock.on('data', onData); sock.resume();
+  }
+
+  _pdu(st, b, o, len) {
+    const cmd = b.readUInt32BE(o + 4), status = b.readUInt32BE(o + 8), seq = b.readUInt32BE(o + 12), end = o + len;
+    switch (cmd) {
+      case 0x80000004: { // submit_sm_resp
+        let id = '';
+        if (status === 0 && len > 16) { const z = b.indexOf(0, o + 16); id = b.toString('latin1', o + 16, z < 0 || z > end ? end : z); }
+        return this._onResp(st, seq, status, id);
+      }
+      case 0x00000005: return this._onDeliver(st, this._decodeDeliver(b, o + 16, end, seq));
+      case 0x00000015: { const r = Buffer.alloc(16); r.writeUInt32BE(16, 0); r.writeUInt32BE(0x80000015, 4); r.writeUInt32BE(seq, 12); return this._queueRaw(st, r); }
+      case 0x80000015: return;
+      default: {
+        const s = st.s, pdu = PDU.fromBuffer(Buffer.from(b.subarray(o, end)));
+        if (!pdu) return;
+        s.emit('pdu', pdu); s.emit(pdu.command, pdu);
+        if (pdu.isResponse() && s._callbacks[seq]) { const f = s._callbacks[seq]; delete s._callbacks[seq]; f(pdu); }
+      }
+    }
+  }
+
+  // deliver_sm fields the engine needs: esm_class, receipted_message_id (0x001E), message_state (0x0427), text
+  _decodeDeliver(b, p, end, seq) {
+    const cs = () => { const z = b.indexOf(0, p); const v = b.toString('latin1', p, z < 0 || z >= end ? end : z); p = (z < 0 || z >= end ? end : z) + 1; return v; };
+    cs(); p += 2; const src = cs(); p += 2; cs();          // service_type, source, destination
+    const esm = b[p]; p += 3; cs(); cs(); p += 2;          // esm, protocol, priority, schedule, validity, registered, replace
+    const dcs = b[p]; p += 2; const smLen = b[p++]; let sm = b.subarray(p, Math.min(end, p + smLen)); p += smLen;
+    let rid = '', state = null;
+    while (p + 4 <= end) {
+      const tag = b.readUInt16BE(p), l = b.readUInt16BE(p + 2), v = p + 4;
+      if (tag === 0x001e) { const z = b.indexOf(0, v); rid = b.toString('latin1', v, z < 0 || z > v + l ? v + l : z); }
+      else if (tag === 0x0427) state = b[v];
+      else if (tag === 0x0424 && !smLen) sm = b.subarray(v, v + l);
+      p = v + l;
+    }
+    return { seq, esm, dcs, src, rid, state, sm };
+  }
+
+  _queueRaw(st, r) { st.out.push(r); if (!st.flushQ) { st.flushQ = true; setImmediate(() => { st.flushQ = false; this._flush(st); }); } }
+
+  _emptySec() { return { sent: 0, ok: 0, err: 0, thr: 0, dlr: 0, bp: 0, lat: new Hist(), q: new Hist(), dlrLat: new Hist() }; }
 
   // Token bucket: accrue permits every 2 ms and send while the window has room
   _pump() {
@@ -190,7 +291,8 @@ class LoadEngine extends EventEmitter {
     const target = this._target(elapsed);
     const rate = target * rampF * this.rateFactor;
     if (!this.rampEnd && rampF >= 1) this.rampEnd = { t, sent: this.G.sent };
-    this.allow = Math.min(this.allow + rate * el / 1000, Math.max(1, rate * 0.02));
+    // Up to 200 ms of permits carry over, so a short stall of the event loop is made up afterwards
+    this.allow = Math.min(this.allow + rate * el / 1000, Math.max(1, rate * 0.2));
 
     const doneNew = (this.t.total && this.G.sent - this.G.retries >= this.t.total) || (this.t.duration && elapsed >= this.t.duration * 1000);
     if (doneNew && !this.retryQ) return this._finishSending();
@@ -198,7 +300,7 @@ class LoadEngine extends EventEmitter {
     const n = this.sessions.length; let blocked = false;
     while (this.allow >= 1) {
       let st = null;
-      for (let k = 0; k < n; k++) { const c = this.sessions[(this.rr + k) % n]; if (c.bound && c.inflight < this.t.window) { st = c; this.rr = (this.rr + k + 1) % n; break; } }
+      for (let k = 0; k < n; k++) { const c = this.sessions[(this.rr + k) % n]; if (c.bound && !c.wblocked && c.inflight < this.t.window) { st = c; this.rr = (this.rr + k + 1) % n; break; } }
       if (!st) { blocked = true; break; }
       if (this.retryQ) { this.retryQ--; this.G.retries++; }
       else if (doneNew) break;
@@ -234,40 +336,50 @@ class LoadEngine extends EventEmitter {
     const b = Buffer.from(tp.buf);
     for (const o of tp.xs) b[o] = 48 + ((Math.random() * 10) | 0);
     if (tp.tagOff > 0) {
-      const ctr = this.t.clientTag ? this.t.clientTag * 1e6 + this.e2eCounter++ % 1e6 : this.e2eCounter++ % 1e7;
+      // 7 digits: [client tag][worker tag] + counter, so markers stay unique across clients and worker threads
+      const sh = this.t.shardTag, c = this.e2eCounter++;
+      const ctr = this.t.clientTag ? this.t.clientTag * 1e6 + (sh ? sh * 1e5 + c % 1e5 : c % 1e6) : (sh ? sh * 1e6 + c % 1e6 : c % 1e7);
       const digits = String(Date.now()).padStart(13, '0') + String(ctr).padStart(7, '0');
       if (tp.ucs2) for (let i = 0; i < 20; i++) b[tp.tagOff + i * 2 + 1] = digits.charCodeAt(i);
       else b.write(digits, tp.tagOff, 'latin1');
     }
     let seq = ++st.s.sequence; if (seq > 0x7ffffff0) { st.s.sequence = 1; seq = 1; }
     b.writeUInt32BE(seq, 12);
-    const t0 = now();
-    st.inflight++; st.sent.set(seq, t0);
-    st.s._callbacks[seq] = pdu => this._onResp(st, seq, t0, pdu, ti);
-    st.out.push(b);
+    // tq: queued now; tw: set when the bytes are handed to the socket (_flush)
+    const rec = { tq: now(), tw: 0, ti };
+    st.inflight++; st.sent.set(seq, rec);
+    st.out.push(b); st.outRecs.push(rec);
     this.G.sent++; this.S.sent++;
   }
 
   _flush(st) {
     if (!st.out.length) return;
-    if (st.s.socket && !st.s.closed) st.s.socket.write(st.out.length === 1 ? st.out[0] : Buffer.concat(st.out));
+    const w = now(); for (const r of st.outRecs) r.tw = w; st.outRecs.length = 0;
+    const sock = st.s.socket;
+    if (sock && !st.s.closed && !sock.destroyed) {
+      // Backpressure: the socket's buffer is full, so this session takes no new messages until it drains
+      if (!sock.write(st.out.length === 1 ? st.out[0] : Buffer.concat(st.out)) && !st.wblocked) {
+        st.wblocked = true; this.S.bp++; sock.once('drain', () => { st.wblocked = false; });
+      }
+    }
     st.out = [];
   }
 
-  _onResp(st, seq, t0, pdu, ti) {
-    if (!st.sent.delete(seq)) return; // already counted as a timeout
-    st.inflight--;
-    const lat = now() - t0;
-    this.S.lat.add(lat); this.latAll.add(lat);
-    const cs = pdu.command_status;
+  // Two latencies: client queue (queued → written to the socket) and server (written → response read)
+  _onResp(st, seq, cs, messageId) {
+    const rec = st.sent.get(seq); if (!rec) return; // already counted as a timeout
+    st.sent.delete(seq); st.inflight--;
+    const t = now(), tw = rec.tw || t, lat = t - tw, q = tw - rec.tq, t0 = tw;
+    this.S.lat.add(lat); this.latAll.add(lat); this.S.q.add(q); this.qAll.add(q);
     if (cs === 0) {
       this.G.ok++; this.S.ok++;
-      const d = this.dsts[ti]; this.G.okByDst[d] = (this.G.okByDst[d] || 0) + 1;
-      if (this.t.dlr && pdu.message_id) {
+      const d = this.dsts[rec.ti]; this.G.okByDst[d] = (this.G.okByDst[d] || 0) + 1;
+      if (this.t.dlr && messageId) {
+        if (this.t.shard) { this.batch.sub.push(messageId, epoch(t0)); return; }
         // The DLR may arrive before submit_sm_resp (happens on queue-based platforms)
-        const early = this.earlyDlr.get(pdu.message_id);
-        if (early !== undefined) { this.earlyDlr.delete(pdu.message_id); const l = Math.max(0, early - t0); this.S.dlrLat.add(l); this.dlrAll.add(l); this.G.dlrEarly = (this.G.dlrEarly || 0) + 1; return; }
-        this.pendingDlr.set(pdu.message_id, t0);
+        const early = this.earlyDlr.get(messageId);
+        if (early !== undefined) { this.earlyDlr.delete(messageId); const l = Math.max(0, early - t0); this.S.dlrLat.add(l); this.dlrAll.add(l); this.G.dlrEarly = (this.G.dlrEarly || 0) + 1; return; }
+        this.pendingDlr.set(messageId, t0);
         if (this.pendingDlr.size > 2000000) { const k = this.pendingDlr.keys().next().value; this.pendingDlr.delete(k); }
       }
     } else if (THROTTLE.has(cs)) {
@@ -282,22 +394,23 @@ class LoadEngine extends EventEmitter {
     }
   }
 
-  _onDeliver(st, pdu) {
-    // Write deliver_sm_resp as raw bytes (fast path)
-    const isDlr = (pdu.esm_class & 0x3c) === 0x04 || pdu.receipted_message_id;
+  // d: { seq, esm, src, rid, state, sm } from _decodeDeliver
+  _onDeliver(st, d) {
+    // deliver_sm_resp as raw bytes
+    const isDlr = (d.esm & 0x3c) === 0x04 || d.rid;
     const reject = isDlr && this.t.dlrRejectEvery && (this.dlrSeen = (this.dlrSeen || 0) + 1) % this.t.dlrRejectEvery === 0;
-    const r = Buffer.alloc(17); r.writeUInt32BE(17, 0); r.writeUInt32BE(0x80000005, 4); r.writeUInt32BE(reject ? this.t.dlrRejectStatus : 0, 8); r.writeUInt32BE(pdu.sequence_number, 12);
-    st.out.push(r); if (!st.flushQ) { st.flushQ = true; setImmediate(() => { st.flushQ = false; this._flush(st); }); }
+    const r = Buffer.alloc(17); r.writeUInt32BE(17, 0); r.writeUInt32BE(0x80000005, 4); r.writeUInt32BE(reject ? this.t.dlrRejectStatus : 0, 8); r.writeUInt32BE(d.seq, 12);
+    this._queueRaw(st, r);
     if (reject) { this.G.dlrRejected = (this.G.dlrRejected || 0) + 1; return; } // the vendor will send it again
-    if (!isDlr) { this.emit('log', msg('MO received from {from}', { from: pdu.source_addr })); return; }
-    let id = pdu.receipted_message_id, stat;
-    const sm = pdu.short_message && pdu.short_message.message;
-    const txt = Buffer.isBuffer(sm) ? sm.toString('latin1') : String(sm || '');
-    const m1 = /stat:(\w+)/i.exec(txt); stat = m1 ? m1[1].toUpperCase() : (pdu.message_state === 2 ? 'DELIVRD' : 'STATE' + pdu.message_state);
+    if (!isDlr) { this.emit('log', msg('MO received from {from}', { from: d.src })); return; }
+    let id = d.rid, stat;
+    const txt = d.sm.toString('latin1');
+    const m1 = /stat:(\w+)/i.exec(txt); stat = m1 ? m1[1].toUpperCase() : (d.state === 2 ? 'DELIVRD' : 'STATE' + d.state);
     if (!id) { const m2 = /id:(\S+)/i.exec(txt); id = m2 && m2[1]; }
     this.G.dlr++; this.S.dlr++;
     this.G.dlrStats[stat] = (this.G.dlrStats[stat] || 0) + 1;
     stat === 'DELIVRD' ? this.G.dlrOk++ : this.G.dlrFail++;
+    if (this.t.shard) { if (id) this.batch.dlr.push(id, epoch(now())); else this.G.dlrUnmatched++; return; }
     let t0 = id && this.pendingDlr.get(id);
     if (t0 === undefined && id && /^[0-9a-f]+$/i.test(id)) {
       // Some platforms format the id differently in the DLR (letter case, hex ↔ decimal)
@@ -314,8 +427,8 @@ class LoadEngine extends EventEmitter {
   _second() {
     const t = now();
     // Response timeouts
-    for (const st of this.sessions) for (const [seq, t0] of st.sent) {
-      if (t - t0 < this.t.respTimeout) break; // Map insertion order = time order
+    for (const st of this.sessions) for (const [seq, rec] of st.sent) {
+      if (t - rec.tq < this.t.respTimeout) break; // Map insertion order = time order
       if (!this.flags.to) { this.flags.to = true; this._event('timeout', 'First response timeout'); }
       st.sent.delete(seq); delete st.s._callbacks[seq]; st.inflight--; this.G.timeouts++; this.G.err++; this.S.err++; this.S.to = (this.S.to || 0) + 1;
       this.G.errs['TIMEOUT'] = (this.G.errs['TIMEOUT'] || 0) + 1;
@@ -323,7 +436,12 @@ class LoadEngine extends EventEmitter {
     // Early DLRs whose submit_sm_resp never arrived within 30 s count as unmatched
     for (const [k, at] of this.earlyDlr) { if (t - at < 30000) break; this.earlyDlr.delete(k); this.G.dlrUnmatched++; this._unmatched(k); }
     const dt = (t - this.secT) / 1000; this.secT = t;
-    const S = this.S, l = S.lat.summary(), d = S.dlrLat.summary();
+    const S = this.S, l = S.lat.summary(), d = S.dlrLat.summary(), q = S.q.summary();
+    // Event loop: delay p99 and how busy it was (this engine's thread)
+    // (the monitor samples every 10 ms, so its raw figures include those 10 ms)
+    const loopP99 = this.loop.count ? Math.max(0, this.loop.percentile(99) / 1e6 - 10) : 0, loopMax = this.loop.count ? Math.max(0, this.loop.max / 1e6 - 10) : 0; this.loop.reset();
+    const eluNow = performance.eventLoopUtilization(), elu = performance.eventLoopUtilization(eluNow, this.elu).utilization; this.elu = eluNow;
+    const LA = this.loopAll; LA.p99Max = Math.max(LA.p99Max, loopP99); LA.eluSum += elu; LA.eluN++; LA.eluMax = Math.max(LA.eluMax, elu); if (elu > 0.9 || loopP99 > 50) LA.busySecs++;
     const el = t - this.t0;
     const wf = Math.min(1, (this.G.windowFullMs - (this.lastWf || 0)) / (dt * 1000)); this.lastWf = this.G.windowFullMs;
     const row = {
@@ -334,22 +452,40 @@ class LoadEngine extends EventEmitter {
       t: Math.round((t - this.t0) / 1000), sentTps: S.sent / dt, okTps: S.ok / dt, errTps: S.err / dt, thrTps: S.thr / dt, dlrTps: S.dlr / dt,
       inflight: this.sessions.reduce((a, s) => a + s.inflight, 0), rate: this.rateFactor,
       p50: l.p50, p95: l.p95, p99: l.p99, max: l.max, dlrP50: d.p50, dlrP95: d.p95,
+      qP50: q.p50, qP95: q.p95, qP99: q.p99, loopP99: Math.round(loopP99 * 10) / 10, loopMax: Math.round(loopMax * 10) / 10, elu: Math.round(elu * 100) / 100, bp: S.bp,
     };
+    // One of several engines: raw histograms, so the coordinator can merge percentiles exactly
+    if (this.t.shard) row.h = { lat: S.lat.toJSON(), q: S.q.toJSON() };
     this.series.push(row);
     this._windowCheck(row, l);
     this.S = this._emptySec();
+    if (this.t.shard) this._sendBatch();
     this.emit('tick', { row, totals: this._totals() });
     // Routing test: count only DLRs matched to this client's own messages (others may be another client's, sent here by mistake)
     const dlrIn = this.t.clientTag ? this.G.ok - this.pendingDlr.size : this.G.dlr;
-    if (this.drainUntil && (t >= this.drainUntil || (row.inflight === 0 && (!this.t.dlr || dlrIn >= this.G.ok)))) this._finish();
+    // One of several engines: the coordinator says when every DLR is in
+    const dlrAllIn = !this.t.dlr || (this.t.shard ? this.remoteDone : dlrIn >= this.G.ok);
+    if (this.drainUntil && (t >= this.drainUntil || (row.inflight === 0 && dlrAllIn))) this._finish();
   }
 
   // Sending held back by the window: below the target while every session had `window` submit_sm waiting for a
   // response. Three such seconds in a row → one event with the window needed for the target, from the measured
   // response time: target × p95 ÷ sessions, +20% headroom. Also compared with the gateway account's window.
   _windowCheck(row, l) {
-    if (!this.tick || !this.rampEnd || row.target < 10) { this.winSecs = 0; return; }
-    const held = row.windowFull >= 0.1 && row.sentTps < row.target * 0.98 && !row.thrTps;
+    if (!this.tick || !this.rampEnd || row.target < 10) { this.winSecs = 0; this.cpuSecs = 0; return; }
+    // The test machine itself is the limit: its event loop is (nearly) always busy. Then the latency it measures
+    // includes its own delay in reading responses, and a bigger window would not help.
+    const behind = row.sentTps < row.target * 0.98 && !row.thrTps;
+    const busy = row.elu >= 0.9 || row.loopP99 > 50;
+    this.cpuSecs = behind && busy ? (this.cpuSecs || 0) + 1 : 0;
+    if (this.cpuSecs >= 3) {
+      if (!this.G.cpuLimit) {
+        this.G.cpuLimit = { t: row.t, sent: Math.round(row.sentTps), target: row.target, elu: Math.round(row.elu * 100), loopP99: row.loopP99 };
+        this._event('cpu', 'The test machine is the limit: {sent} of {target} TPS while its event loop was {elu}% busy (delay p99 {ms} ms). The window is not the cause; use more worker threads or a bigger machine.', { sent: this.G.cpuLimit.sent, target: row.target, elu: this.G.cpuLimit.elu, ms: row.loopP99 });
+      }
+      this.winSecs = 0; return;
+    }
+    const held = row.windowFull >= 0.1 && behind && !busy;
     this.winSecs = held ? this.winSecs + 1 : 0;
     if (this.winSecs < 3 || !l.p95) return;
     const sessions = row.bound || this.sessions.length, w = this.t.window, gw = this.t.gwWindow;
@@ -374,7 +510,9 @@ class LoadEngine extends EventEmitter {
     const rs = this.rampEnd && end - this.rampEnd.t >= 1000 ? (end - this.rampEnd.t) / 1000 : 0;
     return { ...this.G, bound, secs, avgTps: this.G.sent / Math.max(secs, 0.001),
       // Steady-state TPS: after the ramp-up (= avgTps without ramp-up); not for step tests
-      steadyTps: rs && !this.t.steps ? (this.G.sent - this.rampEnd.sent) / rs : null, steadySecs: rs || 0, lat: this.latAll.summary(), dlrLat: this.dlrAll.summary(), pendingDlr: this.pendingDlr.size };
+      steadyTps: rs && !this.t.steps ? (this.G.sent - this.rampEnd.sent) / rs : null, steadySecs: rs || 0, lat: this.latAll.summary(), dlrLat: this.dlrAll.summary(), pendingDlr: this.pendingDlr.size,
+      qLat: this.qAll.summary(), loop: { p99Max: Math.round(this.loopAll.p99Max * 10) / 10, eluAvg: this.loopAll.eluN ? Math.round(this.loopAll.eluSum / this.loopAll.eluN * 100) / 100 : null, eluMax: Math.round(this.loopAll.eluMax * 100) / 100, busySecs: this.loopAll.busySecs },
+      ...(this.t.shard ? { h: { lat: this.latAll.toJSON(), q: this.qAll.toJSON() } } : {}) };
   }
 
   _finishSending() {
@@ -389,6 +527,8 @@ class LoadEngine extends EventEmitter {
 
   _finish() {
     clearInterval(this.secTimer); this.secTimer = null;
+    clearInterval(this.batchTimer); this.batchTimer = null; if (this.t.shard) this._sendBatch();
+    try { this.loop.disable(); } catch {}
     this.G.dlrUnmatched += this.earlyDlr.size; for (const k of this.earlyDlr.keys()) this._unmatched(k); this.earlyDlr.clear();
     const totals = this._totals();
     // Routing test: ids of DLRs nobody here sent, and of messages still waiting for a DLR, so the test can tell
@@ -404,6 +544,7 @@ class LoadEngine extends EventEmitter {
 
   stop() {
     if (!this.running) return;
+    if (this._go) { this.aborted = true; this.go(); this._closeAll(); this.running = false; this.emit('phase', { phase: 'error', ...msg('Stopped while binding') }); return; }
     if (this.binding) {
       // Stop during binding: close open connections and cancel the test
       this.aborted = true;
@@ -417,7 +558,7 @@ class LoadEngine extends EventEmitter {
 
   _closeAll() {
     this.stopping = true;
-    for (const st of this.sessions || []) { try { st.bound ? st.s.unbind(() => st.s.close()) : st.s.close(); setTimeout(() => { try { st.s.close(); } catch {} }, 1500); } catch {} }
+    for (const st of [...(this.sessions || []), ...(this.rxList || [])]) { try { st.bound ? st.s.unbind(() => st.s.close()) : st.s.close(); setTimeout(() => { try { st.s.close(); } catch {} }, 1500); } catch {} }
     this.sessions = [];
   }
 }

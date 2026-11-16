@@ -64,7 +64,7 @@ class JournalWriter {
   constructor(file, live) {
     this.buf = []; this.adds = 0; this.dels = 0;
     this.flag = new Int32Array(new SharedArrayBuffer(4));
-    this.worker = new Worker(path.join(__dirname, 'dlr-journal-worker.js').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1'), { workerData: { file, flag: this.flag, live } });
+    this.worker = new Worker(path.join(__dirname, 'dlr-journal-worker.js'), { workerData: { file, flag: this.flag, live } });
     this.worker.on('error', e => { this.error = e; });
     this.worker.unref();
   }

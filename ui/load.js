@@ -1,5 +1,5 @@
 // Load test view (uses $, val, setVal, esc, t, tm and CONN_FIELDS from renderer.js)
-const LOAD_FIELDS = ['lSrc','lSrcTon','lSrcNpi','lDst','lDstTon','lDstNpi','lText','lEncoding','lSessions','lWindow','lGwWindow','lTps','lMode','lAmount','lRamp','lRespTimeout','lDlrWait','lDlr','lRetry','lE2e','lName','lStepStart','lStepInc','lStepDur','cP95','cP99','cE2e','cErr','cLoss','cMinTps'];
+const LOAD_FIELDS = ['lSrc','lSrcTon','lSrcNpi','lDst','lDstTon','lDstNpi','lText','lEncoding','lSessions','lWindow','lGwWindow','lWorkers','lRxSessions','lTps','lMode','lAmount','lRamp','lRespTimeout','lDlrWait','lDlr','lRetry','lE2e','lName','lStepStart','lStepInc','lStepDur','cP95','cP99','cE2e','cErr','cLoss','cMinTps'];
 const fmt = n => n == null || isNaN(n) ? '—' : Math.round(n).toLocaleString(I18N.locale);
 const fms = n => n == null || isNaN(n) ? '—' : (n < 10 ? n.toFixed(1) : Math.round(n).toString());
 
@@ -61,7 +61,7 @@ $('lStart').onclick = async () => {
   lastTotals = null;
   const cfg = {}; CONN_FIELDS.forEach(f => cfg[f] = val(f));
   const test = {
-    sessions: val('lSessions'), window: val('lWindow'), gwWindow: val('lGwWindow'), tps: val('lTps'),
+    sessions: val('lSessions'), window: val('lWindow'), gwWindow: val('lGwWindow'), workers: val('lWorkers'), rxSessions: val('lRxSessions'), tps: val('lTps'),
     total: val('lMode') === 'total' ? val('lAmount') : 0, duration: val('lMode') === 'duration' ? val('lAmount') : 0,
     steps: val('lMode') === 'steps' ? { start: val('lStepStart'), inc: val('lStepInc'), dur: val('lStepDur') } : null,
     name: val('lName').trim(),
@@ -121,7 +121,7 @@ api.on('load:done', m => {
 });
 
 function resetKpis() {
-  ['kSentTps','kOkTps','kAvgTps','kLat','kDlrLat'].forEach(id => $(id).textContent = '—'); $('kAvgSub').textContent = 'TPS';
+  ['kSentTps','kOkTps','kAvgTps','kLat','kDlrLat'].forEach(id => $(id).textContent = '—'); $('kAvgSub').textContent = 'TPS'; $('kLatSub').textContent = 'ms';
   ['kSent','kOk','kErr','kThr','kTo','kInfl','kDlr'].forEach(id => $(id).textContent = '0');
   $('tErrs').innerHTML = '<tr><td class="muted">—</td></tr>'; $('tDlr').innerHTML = '<tr><td class="muted">—</td></tr>';
 }
@@ -138,6 +138,10 @@ function renderTotals(T, r) {
   $('kDlr').textContent = `${fmt(T.dlrOk)} / ${fmt(T.dlrFail)}` + (T.dlrUnmatched ? ' · ' + t('{n} unmatched', { n: fmt(T.dlrUnmatched) }) : '') + (T.pendingDlr ? ' · ' + t('{n} pending', { n: fmt(T.pendingDlr) }) : '');
   const l = T.lat || {};
   $('kLat').textContent = l.n ? `${fms(l.p50)} / ${fms(l.p95)} / ${fms(l.p99)}` : '—';
+  // Client queue and event loop: the test machine's own share
+  const q = T.qLat || {}, lp = r ? r.loopP99 : T.loop && T.loop.p99Max;
+  $('kLatSub').textContent = 'ms' + (q.n ? ' · ' + t('client queue p95 {ms}', { ms: fms(q.p95) }) : '') + (lp != null ? ' · ' + t('event loop p99 {ms}', { ms: fms(lp) }) : '') + (T.workers > 1 ? ' · ' + t('{n} workers', { n: T.workers }) : '');
+  $('kLatSub').className = (r && (r.elu >= 0.9 || r.loopP99 > 50)) ? 'warn' : '';
   const d = T.dlrLat || {};
   $('kDlrLat').textContent = d.n ? `${fms(d.p50)} / ${fms(d.p95)} ms` : '—';
   const errs = Object.entries(T.errs || {}).sort((a, b) => b[1] - a[1]);
@@ -161,6 +165,7 @@ const LAT_LINES = [
   { k: 'p95', label: 'p95', c: '--warn' },
   { k: 'p99', label: 'p99', c: '--err' },
   { k: 'e2eP95', label: 'End-to-end p95', c: '--violet' },
+  { k: 'qP95', label: 'Client queue p95', c: '--muted' },
 ];
 function legend(el, lines) { el.innerHTML = lines.map(l => `<i style="background:${css(l.c)}"></i>${esc(t(l.label))}`).join(''); }
 function legends() { legend($('lgTps'), TPS_LINES); legend($('lgLat'), LAT_LINES); }
@@ -223,13 +228,14 @@ $('lCsv').onclick = () => {
     row(['# ' + t('Sent'), T.sent, t('Accepted'), T.ok, t('Errors'), T.err, 'Throttle', T.throttled, t('Retries'), T.retries, t('Timeouts'), T.timeouts]),
     row(['# ' + t('Average TPS after ramp-up'), T.steadyTps ?? '', t('Average TPS incl. ramp-up'), T.avgTps, t('Duration (s)'), T.secs, t('Gateway window'), te.gwWindow || '']),
     ...(T.windowAdvice ? [row(['# ' + t('Window advice'), t('needed per session'), T.windowAdvice.need, t('response p95 ms'), T.windowAdvice.p95, t('gateway window too low'), T.windowAdvice.gwTooLow ? t('Yes') : t('No')])] : []),
-    row(['# ' + t('Response ms'), 'p50', l.p50, 'p95', l.p95, 'p99', l.p99, 'max', l.max]),
+    row(['# ' + t('Server response ms'), 'p50', l.p50, 'p95', l.p95, 'p99', l.p99, 'max', l.max]),
+    row(['# ' + t('Client queue ms'), 'p50', (T.qLat || {}).p50, 'p95', (T.qLat || {}).p95, 'p99', (T.qLat || {}).p99, t('Event loop p99 max ms'), T.loop && T.loop.p99Max, t('busiest worker avg %'), T.loop && T.loop.eluAvg != null ? Math.round(T.loop.eluAvg * 100) : '', t('Worker threads'), T.workers || 1]),
     row(['# DLR', T.dlr, 'DELIVRD', T.dlrOk, t('other'), T.dlrFail, t('unmatched'), T.dlrUnmatched, 'DLR ms p50', d.p50, 'p95', d.p95]),
     ...(r.e2e ? [row(['# ' + t('End-to-end'), t('reached vendor'), r.e2e.n, t('missing'), Math.max(0, (T.ok || 0) - r.e2e.n), t('duplicates'), r.e2e.dup, 'p50 ms', r.e2e.total?.p50, 'p95', r.e2e.total?.p95, 'p99', r.e2e.total?.p99])] : []),
     row(['# ' + t('Error codes'), Object.entries(T.errs || {}).map(([k, v]) => k + '=' + v).join(' ')]),
     '',
-    ['second', 'sent_tps', 'accepted_tps', 'error_tps', 'throttle_tps', 'dlr_tps', 'inflight', 'window_full', 'rate_factor', 'p50_ms', 'p95_ms', 'p99_ms', 'max_ms', 'dlr_p50_ms', 'dlr_p95_ms', 'e2e_total', 'e2e_p50_ms', 'e2e_p95_ms', 'e2e_p99_ms'].join(sep),
-    ...series.map(s => row([s.t, s.sentTps, s.okTps, s.errTps, s.thrTps, s.dlrTps, s.inflight, s.windowFull, s.rate, s.p50, s.p95, s.p99, s.max, s.dlrP50, s.dlrP95, s.e2eN, s.e2eP50, s.e2eP95, s.e2eP99])),
+    ['second', 'sent_tps', 'accepted_tps', 'error_tps', 'throttle_tps', 'dlr_tps', 'inflight', 'window_full', 'rate_factor', 'p50_ms', 'p95_ms', 'p99_ms', 'max_ms', 'client_queue_p95_ms', 'event_loop_p99_ms', 'event_loop_busy', 'dlr_p50_ms', 'dlr_p95_ms', 'e2e_total', 'e2e_p50_ms', 'e2e_p95_ms', 'e2e_p99_ms'].join(sep),
+    ...series.map(s => row([s.t, s.sentTps, s.okTps, s.errTps, s.thrTps, s.dlrTps, s.inflight, s.windowFull, s.rate, s.p50, s.p95, s.p99, s.max, s.qP95, s.loopP99, s.elu, s.dlrP50, s.dlrP95, s.e2eN, s.e2eP50, s.e2eP95, s.e2eP99])),
   ];
   api.saveFile('﻿' + lines.join('\n'), `smpp-load-test-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.csv`);
 };

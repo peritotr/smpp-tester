@@ -168,6 +168,8 @@
         <label class="ls-step" title="TPS of the first step" data-i18n-attr="title"><span data-i18n>Start TPS</span> <input id="lStepStart" type="number" value="1000" min="1"></label>
         <label class="ls-step" title="TPS added at each step" data-i18n-attr="title"><span data-i18n>Increment (TPS)</span> <input id="lStepInc" type="number" value="1000" min="1"></label>
         <label class="ls-step" title="Duration of each step" data-i18n-attr="title"><span data-i18n>Step (s)</span> <input id="lStepDur" type="number" value="60" min="5"></label>
+        <label title="CPU cores used for sending: the sessions and the target are split over this many worker threads. 0 = automatic (one per core but one)" data-i18n-attr="title"><span data-i18n>Worker threads</span> <input id="lWorkers" type="number" value="0" min="0" max="8"></label>
+        <label title="Extra receiver binds that only take DLRs; the sending binds are then transmitters. 0 = DLRs come on the sending binds (transceiver)" data-i18n-attr="title"><span data-i18n>DLR receiver binds</span> <input id="lRxSessions" type="number" value="0" min="0" max="32"></label>
         <label title="Time to ramp up to the target TPS" data-i18n-attr="title"><span>Ramp-up (s)</span> <input id="lRamp" type="number" value="5" min="0"></label>
         <label title="A submit_sm without a response within this time counts as a timeout" data-i18n-attr="title"><span data-i18n>Response limit (s)</span> <input id="lRespTimeout" type="number" value="10" min="1"></label>
         <label><span data-i18n>DLR wait (s)</span> <input id="lDlrWait" type="number" value="15" min="0"></label>
@@ -200,7 +202,7 @@
         <div class="kpi big"><span data-i18n>Current send rate</span><b id="kSentTps">—</b><i>TPS</i></div>
         <div class="kpi big"><span data-i18n>Current success rate</span><b id="kOkTps">—</b><i>TPS</i></div>
         <div class="kpi big" title="Average from the end of the ramp-up; the second figure includes the ramp-up" data-i18n-attr="title"><span data-i18n>Average after ramp-up</span><b id="kAvgTps">—</b><i id="kAvgSub">TPS</i></div>
-        <div class="kpi big"><span data-i18n>Response p50 / p95 / p99</span><b id="kLat">—</b><i>ms</i></div>
+        <div class="kpi big" title="Server: from writing the submit_sm to the socket until its response is read. Client queue: from queuing the message until it is written. Event loop: delay of the test machine's own processing." data-i18n-attr="title"><span data-i18n>Server response p50 / p95 / p99</span><b id="kLat">—</b><i id="kLatSub">ms</i></div>
         <div class="kpi"><span data-i18n>Sent</span><b id="kSent">0</b></div>
         <div class="kpi"><span data-i18n>Accepted</span><b id="kOk" class="ok">0</b></div>
         <div class="kpi"><span data-i18n>Errors</span><b id="kErr" class="err">0</b></div>

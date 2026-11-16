@@ -8,6 +8,9 @@ class Hist {
     return this.max;
   }
   merge(h) { for (let i = 0; i < 700; i++) this.b[i] += h.b[i]; this.n += h.n; this.sum += h.sum; this.max = Math.max(this.max, h.max); }
+  // Plain form for sending between threads/processes, and back
+  toJSON() { return { b: Array.from(this.b), n: this.n, sum: this.sum, max: this.max }; }
+  static from(j) { const h = new Hist(); if (j) { h.b.set(j.b); h.n = j.n; h.sum = j.sum; h.max = j.max; } return h; }
   summary() { return this.n ? { n: this.n, avg: this.sum / this.n, p50: this.pct(0.5), p95: this.pct(0.95), p99: this.pct(0.99), max: this.max } : { n: 0 }; }
 }
 

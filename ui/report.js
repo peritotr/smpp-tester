@@ -48,7 +48,7 @@
     [t('Peak capacity'), N(a.capacity && a.capacity.ok), t('TPS · 10 s avg.')],
     [steps ? t('Latency onset step') : t('Latency onset load'), a.knee ? N(a.knee.target) : a.onset ? '~' + N(a.onset.tps) : t('none'), a.knee || a.onset ? 'TPS' : ''],
     [t('Sustained'), N(a.steady ? a.steady.ok : null), t('TPS · steady state')],
-    [t('Response p50 / p95 / p99'), `${MS(L.p50)} / ${MS(L.p95)} / ${MS(L.p99)}`, 'ms'],
+    [t('Server response p50 / p95 / p99'), `${MS(L.p50)} / ${MS(L.p95)} / ${MS(L.p99)}`, 'ms' + (T.qLat && T.qLat.n ? ' · ' + t('client queue p95 {ms}', { ms: MS(T.qLat.p95) }) : '') + (T.loop ? ' · ' + t('event loop p99 {ms}', { ms: MS(T.loop.p99Max) }) : '')],
     [t('Baseline latency (p95)'), MS(a.baseline && a.baseline.p95), t('ms · at low load')],
     [t('End-to-end p95'), ve && ve.total ? MS(ve.total.p95) : '—', ve ? 'ms' : t('not measured')],
     [t('Error rate'), errPct.toFixed(errPct < 0.01 ? 3 : 2) + '%', `${N(T.err)} / ${N(T.sent)}`],
@@ -110,6 +110,7 @@
   </div>
   <section><h2>${esc(t('Test settings'))}</h2><div class="grid2"><table class="kv"><tbody>
       <tr><td>${esc(t('Test type'))}</td><td>${esc(steps ? t('Step: {from} → {to} TPS, {n} steps × {s} s', { from: N(test.steps[0]), to: N(test.steps.at(-1)), n: test.steps.length, s: test.stepDur }) : t('Constant: {tps} TPS, {amount}', { tps: N(test.tps), amount: test.total ? t('{n} messages', { n: N(test.total) }) : N(test.duration) + ' s' }))}</td></tr>
+      <tr><td>${esc(t('Worker threads'))}</td><td>${T.workers || 1}${test.rxSessions ? ' · ' + esc(t('{n} DLR receiver binds', { n: test.rxSessions })) : ''}</td></tr>
       <tr><td>${esc(t('Sessions × window'))}</td><td>${test.sessions} × ${test.window}${test.gwWindow ? ' · ' + esc(t('gateway window {n}', { n: test.gwWindow })) : ''}</td></tr>
       <tr><td>Ramp-up</td><td>${test.ramp || 0} s</td></tr>
       <tr><td>${esc(t('Response limit / DLR wait'))}</td><td>${test.respTimeout} s / ${test.dlrWait} s</td></tr>
@@ -204,6 +205,8 @@
       { y: rows.map(r => r.p95), color: '--warn', width: 2.25, label: 'p95' },
       { y: rows.map(r => r.p99), color: '--err', width: 1.5, label: 'p99' },
       { y: rows.map(r => r.e2eP95), color: '--violet', width: 1.75, label: t('End-to-end p95') },
+      { y: rows.map(r => r.qP95), color: '--muted', width: 1.25, label: t('Client queue p95') },
+      { y: rows.map(r => r.loopP99), color: '--muted', width: 1.25, dash: [3, 3], label: t('Event loop p99') },
     ];
     const hrefs = [];
     if (a.baseline && a.baseline.p95) hrefs.push({ y: a.baseline.p95, color: '--muted', dash: [2, 3] });
@@ -242,8 +245,8 @@
   $('bJson').onclick = () => download(JSON.stringify(rep, null, 1), fname('json'), 'application/json');
   $('bCsv').onclick = () => {
     const tr = I18N.lang === 'tr', sep = tr ? ';' : ',', dec = tr ? ',' : '.';
-    const cols = ['t', 'step', 'target', 'sentTps', 'okTps', 'errTps', 'thrTps', 'toTps', 'dlrTps', 'inflight', 'windowFull', 'bound', 'p50', 'p95', 'p99', 'max', 'dlrP50', 'dlrP95', 'e2eN', 'e2eP50', 'e2eP95', 'e2eP99'];
-    const head = ['second', 'step', 'target_tps', 'sent_tps', 'accepted_tps', 'error_tps', 'throttle_tps', 'timeout_tps', 'dlr_tps', 'inflight', 'window_full_ratio', 'bound_sessions', 'p50_ms', 'p95_ms', 'p99_ms', 'max_ms', 'dlr_p50_ms', 'dlr_p95_ms', 'e2e_total', 'e2e_p50_ms', 'e2e_p95_ms', 'e2e_p99_ms'];
+    const cols = ['t', 'step', 'target', 'sentTps', 'okTps', 'errTps', 'thrTps', 'toTps', 'dlrTps', 'inflight', 'windowFull', 'bound', 'p50', 'p95', 'p99', 'max', 'qP95', 'qP99', 'loopP99', 'elu', 'dlrP50', 'dlrP95', 'e2eN', 'e2eP50', 'e2eP95', 'e2eP99'];
+    const head = ['second', 'step', 'target_tps', 'sent_tps', 'accepted_tps', 'error_tps', 'throttle_tps', 'timeout_tps', 'dlr_tps', 'inflight', 'window_full_ratio', 'bound_sessions', 'server_p50_ms', 'server_p95_ms', 'server_p99_ms', 'server_max_ms', 'client_queue_p95_ms', 'client_queue_p99_ms', 'event_loop_p99_ms', 'event_loop_busy', 'dlr_p50_ms', 'dlr_p95_ms', 'e2e_total', 'e2e_p50_ms', 'e2e_p95_ms', 'e2e_p99_ms'];
     const f = v => v == null || isNaN(v) ? '' : (Number.isInteger(v) ? String(v) : v.toFixed(2)).replace('.', dec);
     const clean = s => String(s).replace(new RegExp(sep, 'g'), ' ');
     const lvl = { ok: 'OK', warn: t('WARNING'), bad: t('ISSUE') };
