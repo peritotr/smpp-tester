@@ -20,7 +20,7 @@ const MAX_WORKERS = 8;
 function workerCount(test) {
   if (Number(test.clientTag)) return 1; // routing test client: one engine (it reports DLR ids per client)
   const sessions = Math.max(1, Number(test.sessions) || 4);
-  const want = Math.floor(Number(test.workers) || 0);
+  const want = Math.floor(Number(test.workers) || Number(process.env.SMPP_TESTER_WORKERS) || 0);
   const auto = Math.max(1, (os.availableParallelism ? os.availableParallelism() : os.cpus().length) - 1);
   return Math.max(1, Math.min(want > 0 ? want : auto, sessions, MAX_WORKERS));
 }
@@ -58,6 +58,14 @@ class LoadCluster extends EventEmitter {
     this.secTimer = setInterval(() => this._second(), 1000);
   }
 
+  // A worker's step event names its own share of the TPS: show the test's step TPS instead
+  _step(m) {
+    if (!m || m.key !== 'Step {i}/{n}: {tps} TPS' || !this.test.steps) return m;
+    const st = this.test.steps, max = Number(this.test.tps), start = Number(st.start) || Number(st.inc), i = m.p.i;
+    const tps = i >= m.p.n ? max : Math.min(max, start + (i - 1) * Number(st.inc));
+    return { ...m, ...msg(m.key, { ...m.p, tps }) };
+  }
+
   _log(m) { const k = m.key ? m.key + JSON.stringify(m.p || {}) : m.text; if (this.logSeen.has(k)) return; this.logSeen.add(k); this.emit('log', m); }
 
   _onShard(sh, type, d) {
@@ -68,7 +76,7 @@ class LoadCluster extends EventEmitter {
       if (d.phase === 'draining') this._maybeDraining();
       return;
     }
-    if (type === 'log') return this._log(d);
+    if (type === 'log') return this._log(this._step(d));
     if (type === 'dlrBatch') return this._dlrBatch(d);
     if (type === 'tick') { sh.totals = d.totals; sh.row = d.row; return this._addRow(sh, d.row); }
     if (type === 'done') { sh.done = d; sh.totals = d.totals; sh.live = false; this._flushRows(true); return this._maybeDone(); }
@@ -209,16 +217,26 @@ class LoadCluster extends EventEmitter {
     const totals = this._totals();
     // Worker events (deduplicated) and the coordinator's own, in time order
     const seen = new Set(), ev = [...this.events];
-    for (const s of this.shards) for (const e of (s.done && s.done.events) || []) {
+    for (const s of this.shards) for (let e of (s.done && s.done.events) || []) {
       if (['start', 'sendEnd', 'done'].includes(e.type)) continue;
+      if (e.type === 'step') e = { ...this._step(e), t: e.t, type: e.type };
       const k = e.type + (e.key || e.text) + JSON.stringify(e.p || {}); if (seen.has(k)) continue; seen.add(k); ev.push(e);
     }
     ev.sort((a, b) => a.t - b.t);
     ev.push({ t: Math.round((performance.now() - this.t0) / 100) / 10, type: 'done', ...msg('Test finished') });
     const t0 = this.shards.find(s => s.done);
     this._end();
-    this.emit('done', { totals, series: this.series, events: ev, startedAt: this.startedAt, endedAt: Date.now(),
-      test: { ...(t0 ? t0.done.test : {}), ...this.test, workers: totals.workers, respTimeout: Number(this.test.respTimeout) || 10, dlrWait: Number(this.test.dlrWait ?? 10) } });
+    // The test as one engine would have reported it (step list in total TPS, not a worker's share)
+    const test = { ...(t0 ? t0.done.test : {}), ...this.test, workers: totals.workers, respTimeout: Number(this.test.respTimeout) || 10, dlrWait: Number(this.test.dlrWait ?? 10) };
+    delete test.shard; delete test.shardTag;
+    test.tps = Number(this.test.tps) || test.tps; test.sessions = Number(this.test.sessions) || test.sessions; test.total = Number(this.test.total) || 0;
+    if (this.test.steps && t0 && t0.done.test.steps) {
+      const st = this.test.steps, max = test.tps, start = Number(st.start) || Number(st.inc), inc = Number(st.inc), list = [];
+      for (let v = start; v < max + inc * 0.001 && list.length < 100; v += inc) list.push(Math.min(v, max));
+      if (list.at(-1) < max) list.push(max);
+      test.steps = list; test.stepDur = Number(st.dur); test.duration = t0.done.test.duration;
+    }
+    this.emit('done', { totals, series: this.series, events: ev, startedAt: this.startedAt, endedAt: Date.now(), test });
     this.emit('phase', { phase: 'done', ...msg('Done') });
   }
 

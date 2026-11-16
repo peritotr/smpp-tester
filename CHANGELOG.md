@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.10.1
+
+- Step test over several worker threads: step events and the step list in the report show the test's TPS, not one worker's share (1.10.0's release build stopped on this test, so it has no server image)
+- `SMPP_TESTER_WORKERS` environment variable: default number of worker threads when the test does not set one
+
 ## 1.10.0
 
 - **Worker threads** for the load test: the sessions and the target TPS are split over several threads (CPU cores), each with its own sessions and rate control. Setting *Worker threads*, 0 = automatic (one per core but one, at most one per session, at most 8). The threads start together; per-second figures, totals and latency percentiles are merged from their histograms; DLRs are matched to submits across threads, so a DLR that arrives on another thread's bind still counts with its latency
