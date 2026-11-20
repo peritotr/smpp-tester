@@ -34,5 +34,6 @@ contextBridge.exposeInMainWorld('api', {
   reportOpen: id => ipcRenderer.invoke('report:open', id),
   reportPdf: name => ipcRenderer.invoke('report:pdf', name),
   evidenceSave: file => ipcRenderer.invoke('evidence:save', file),
+  recordsSave: (run, kind) => ipcRenderer.invoke('records:save', run, kind),
   on: (ch, fn) => ipcRenderer.on(ch, (_, d) => fn(d)),
 });

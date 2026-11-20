@@ -38,6 +38,7 @@ window.RoutingReport = function (rep, h) {
       if (ct.windowAdvice) F.push(['warn', t('{name}: sending was held back by the window; use ≈ {need} per session.', { name: c.name, need: ct.windowAdvice.need })]);
       const errs = Object.entries(ct.errs || {}).filter(([k]) => k !== 'TIMEOUT');
       if (errs.length) F.push(['bad', `${c.name}: ` + t('Error responses: {list}.', { list: errs.map(([k, v]) => `${k} × ${N(v)}`).join(', ') })]);
+      if (window.RecordsUI) F.push(...RecordsUI.findings(ct.records, c.name, t, N));
     }
     return F;
   }
@@ -111,6 +112,8 @@ window.RoutingReport = function (rep, h) {
         <td class="n">${c.sessions} × ${c.window}</td><td class="n">${N(c.tps)}</td><td class="n">${N(ct.steadyTps ?? ct.avgTps)}</td><td class="n">${MS(l.p50)} / ${MS(l.p95)}</td>
         <td class="n ${ct.throttled ? 'warn' : ''}">${N(ct.throttled)}</td><td class="n ${ct.err ? 'err' : ''}">${N(ct.err)}</td><td class="n">${N(ct.dlr)}</td><td class="n ${ct.dlrUnmatched ? 'warn' : ''}">${N(ct.dlrUnmatched)}</td></tr>`; }).join('')}
       </tbody></table></div></section>`;
+    // Per-message records, one block per client
+    if (window.RecordsUI) for (const c of C) if (c.totals && c.totals.records) html += RecordsUI.section(c.totals.records, t('Per-message records: {name} ({sid})', { name: c.name, sid: c.systemId || '—' }), h);
 
     // Vendors
     html += `<section><h2>${esc(t('Vendors'))}</h2><div class="scroll"><table><thead><tr><th>Vendor</th><th>${esc(t('Port'))} · system_id</th><th>${esc(t('Should get'))}</th><th>${esc(t('Behaviour'))}</th><th class="n">${esc(t('Received'))}</th>
@@ -128,6 +131,7 @@ window.RoutingReport = function (rep, h) {
     html += `<section><h2>${esc(t('Events'))}</h2><table><tbody>${ev.map(e => `<tr><td class="mono" style="width:60px">${mmss(e.t)}</td><td>${esc(e.txt)}</td></tr>`).join('') || `<tr><td class="muted">${esc(t('No events'))}</td></tr>`}</tbody></table>
       <p class="note">${esc(t('Duration {d} s, ramp-up {r} s, DLR {dlr}, message "{text}".', { d: rep.test.duration, r: rep.test.ramp || 0, dlr: rep.test.dlr ? t('Yes') : t('No'), text: rep.test.text || '' }))}</p></section>`;
     $('report').innerHTML = html;
+    if (window.RecordsUI) RecordsUI.wire();
     document.querySelectorAll('button.evd').forEach(b => b.onclick = () => {
       const ev = V[Number(b.dataset.k)].evidence; if (!ev) return;
       if (api.evidenceSave && !api.web) return api.evidenceSave(ev.file);

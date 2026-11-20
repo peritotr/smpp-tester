@@ -74,7 +74,15 @@ const routing = new RoutingRun((file, onMsg) => {
   p.on('message', onMsg);
   return { post: m => up ? p.postMessage(m) : q.push(m), kill: () => p.kill(), onExit: f => p.on('exit', f) };
 });
-app.whenReady().then(() => { routing.evidenceDir = getReports().evidenceDir; });
+app.whenReady().then(() => { routing.evidenceDir = getReports().evidenceDir; routing.recordDir = path.join(app.getPath('userData'), 'records'); });
+// Per-message records of a test as plain CSV
+ipcMain.handle('records:save', async (e, run, kind) => {
+  const rec = require('./records'), dir = path.join(app.getPath('userData'), 'records');
+  if (!rec.runFiles(dir, run, kind).length) return false;
+  const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), { defaultPath: `${run}-${kind}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] });
+  if (r.canceled || !r.filePath) return false;
+  await rec.pipeCsv(dir, run, kind, fs.createWriteStream(r.filePath)); return r.filePath;
+});
 routing.on('phase', m => send('routing:phase', m));
 routing.on('tick', m => send('routing:tick', m));
 for (const ev of ['log', 'vlog', 'clog']) routing.on(ev, m => send('routing:' + ev, m));
@@ -119,7 +127,7 @@ ipcMain.handle('smpp:analyze', (_, t, enc) => analyze(t, enc));
 
 ipcMain.handle('load:start', (_, cfg, test) => {
   loadSeries = []; mockE2e = null; loadReq = { cfg: { ...cfg, password: undefined }, test };
-  getLoad().postMessage({ type: 'start', cfg, test }); return { ok: true };
+  getLoad().postMessage({ type: 'start', cfg, test: { ...test, recordDir: path.join(app.getPath('userData'), 'records') } }); return { ok: true };
 });
 ipcMain.handle('reports:list', () => getReports().list());
 ipcMain.handle('reports:get', (_, id) => getReports().get(id));

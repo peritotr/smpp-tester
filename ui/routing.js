@@ -15,7 +15,7 @@
   };
   // Client passwords are not kept in the browser: they come from the selected profile or are typed in for this session
   const save = () => { try { localStorage.setItem('routingForm', JSON.stringify({ ...F, clients: F.clients.map(c => ({ ...c, password: '' })) })); } catch {} };
-  for (const id of ['rtName', 'rtDuration', 'rtRamp', 'rtDlrWait', 'rtText', 'rtDlr']) { if (F[id] != null) setVal(id, F[id]); $(id).addEventListener('change', () => { F[id] = val(id); save(); }); }
+  for (const id of ['rtName', 'rtDuration', 'rtRamp', 'rtDlrWait', 'rtText', 'rtDlr', 'rtRecord']) { if (F[id] != null) setVal(id, F[id]); $(id).addEventListener('change', () => { F[id] = val(id); save(); }); }
 
   function cell(row, [k, cls, type], kind) {
     if (type === 'profile') return `<td><select class="${cls}" data-k="${k}"><option value="">—</option>${(typeof profiles !== 'undefined' ? profiles : []).map(p => `<option ${p.name === row.profile ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></td>`;
@@ -104,7 +104,7 @@
     if (miss) { alert(t('{name}: enter the host and the prefix mix.', { name: miss.name })); return; }
     const spec = {
       name: val('rtName').trim(), duration: Number(val('rtDuration')) || 60, ramp: Number(val('rtRamp')) || 0, dlrWait: Number(val('rtDlrWait')) || 0,
-      dlr: val('rtDlr'), text: val('rtText') || 'Routing test', respTimeout: 10, bindWait: 30,
+      dlr: val('rtDlr'), record: val('rtRecord'), text: val('rtText') || 'Routing test', respTimeout: 10, bindWait: 30,
       vendors: F.vendors.map(v => ({ ...v })), clients: F.clients.map(c => ({ ...c, bindMode: 'trx' })),
     };
     $('rtLog').textContent = ''; $('rtLiveC').innerHTML = $('rtLiveV').innerHTML = '';

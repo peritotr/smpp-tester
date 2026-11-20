@@ -1,7 +1,7 @@
 {
   "name": "smpp-tester",
   "productName": "SMPP Tester",
-  "version": "1.10.2",
+  "version": "1.11.0",
   "description": "SMPP test client, load tester and mock vendor (SMSC) with performance reports — desktop app and Docker web server",
   "keywords": [
     "smpp",
@@ -63,6 +63,8 @@
       "load-worker.js",
       "load-cluster.js",
       "load-shard.js",
+      "records.js",
+      "record-writer.js",
       "mock-smsc.js",
       "mock-worker.js",
       "sms-decode.js",
