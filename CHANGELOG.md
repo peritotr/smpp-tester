@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.2
+
+- Routing test: each vendor now has a **Stop vendor / Start vendor** button right next to its bind state, beside *Stop vendors* (before, the button was only in the last, unlabelled column of the live vendor table). The live table column is labelled *Stop / start*
+
 ## 1.10.1
 
 - Step test over several worker threads: step events and the step list in the report show the test's TPS, not one worker's share (1.10.0's release build stopped on this test, so it has no server image)
