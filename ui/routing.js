@@ -70,7 +70,7 @@
   function vendorsState(m) {
     vUp = !!(m && m.up);
     const L = (m && m.list) || [];
-    $('rtVState').innerHTML = vUp ? L.map(v => `<span class="${v.conns ? 'ok' : 'warn'}">${esc(v.name)} ${v.conns ? '✓ ' + esc(t('bound')) : '○ ' + esc(t('waiting for bind'))}</span>`).join(' · ') : '';
+    $('rtVState').innerHTML = vUp ? chips(L) : '';
     if (vUp && !running) $('rtLiveV').innerHTML = L.map((v, i) => `<tr><td>${esc(v.name)}${v.down ? ` <span class="err">${esc(t('down'))}</span>` : ''}</td><td class="r ${v.conns ? 'ok' : 'warn'}">${v.conns}</td><td class="r">—</td><td class="r">—</td><td class="r">—</td><td class="r">—</td><td class="r">—</td><td class="r">${vBtn(i, v.down)}</td></tr>`).join('');
     setRunning(running);
   }
@@ -83,13 +83,19 @@
     else phase(wasUp ? '' : t('Vendors are up: add them on your platform and wait until each shows "bound".'));
   };
   api.on('routing:vendors', vendorsState);
+  // Next to "Stop vendors": each vendor's bind state and a button to stop or start that one vendor (failover test)
+  function chips(L) {
+    return L.map((v, i) => `<span class="rt-chip ${v.down ? 'err' : v.conns ? 'ok' : 'warn'}">${esc(v.name)} ${v.down ? esc(t('stopped')) : v.conns ? '✓ ' + esc(t('bound')) : '○ ' + esc(t('waiting for bind'))} ${vBtn(i, v.down)}</span>`).join(' ');
+  }
   // Failover test: take one vendor down and bring it back while the test runs
-  const vBtn = (i, down) => `<button class="small ${down ? 'primary' : 'ghost'}" data-vi="${i}" data-down="${down ? 1 : 0}">${esc(down ? t('Bring up') : t('Take down'))}</button>`;
-  $('rtLiveV').addEventListener('click', async e => {
+  const vBtn = (i, down) => `<button class="small ${down ? 'primary' : 'ghost'}" data-vi="${i}" data-down="${down ? 1 : 0}" title="${esc(down ? t('Start this vendor again: it listens and accepts binds') : t('Stop only this vendor: its binds drop and its port closes; the other vendors keep running'))}">${esc(down ? t('Start vendor') : t('Stop vendor'))}</button>`;
+  const onVBtn = async e => {
     const b = e.target.closest('button[data-vi]'); if (!b) return;
     b.disabled = true;
     await (b.dataset.down === '1' ? api.routingVendorUp(Number(b.dataset.vi)) : api.routingVendorDown(Number(b.dataset.vi)));
-  });
+  };
+  $('rtLiveV').addEventListener('click', onVBtn);
+  $('rtVState').addEventListener('click', onVBtn);
   const phase = (m, cls) => { $('rtPhase').textContent = m ? tm(m) : ''; $('rtPhase').className = cls || 'muted'; };
   const log = m => { const el = $('rtLog'); el.textContent = `${new Date().toLocaleTimeString(I18N.locale)}  ${m}\n` + el.textContent.slice(0, 20000); };
 
@@ -122,6 +128,7 @@
   api.on('routing:tick', m => {
     $('rtLiveC').innerHTML = m.clients.map(c => `<tr><td>${esc(c.name)}</td><td class="${c.phase === 'error' ? 'err' : ''}">${esc(t(PH[c.phase] || c.phase))}</td><td class="r">${fmtN(c.sentTps)}</td><td class="r">${fmtN(c.okTps)}</td>
       <td class="r">${c.p95 == null ? '—' : c.p95 < 10 ? c.p95.toFixed(1) : Math.round(c.p95)}</td><td class="r ${c.thrTps ? 'warn' : ''}">${fmtN(c.thrTps)}</td><td class="r ${c.errTps ? 'err' : ''}">${fmtN(c.errTps)}</td><td class="r">${fmtN(c.sent)}</td><td class="r">${fmtN(c.dlr)}</td></tr>`).join('');
+    $('rtVState').innerHTML = chips(m.vendors);
     $('rtLiveV').innerHTML = m.vendors.map((v, i) => `<tr><td>${esc(v.name)}${v.down ? ` <span class="err">${esc(t('down'))}</span>` : ''}</td><td class="r">${v.conns}</td><td class="r">${fmtN(v.rx)}</td><td class="r">${fmtN(v.n)}</td>
       <td class="r">${v.e2eP95 == null ? '—' : Math.round(v.e2eP95) + ' ms'}</td><td class="r ${v.misroute ? 'err' : 'ok'}">${fmtN(v.misroute)}</td><td class="r ${v.failover ? 'warn' : ''}">${fmtN(v.failover)}</td><td class="r">${vBtn(i, v.down)}</td></tr>`).join('');
   });

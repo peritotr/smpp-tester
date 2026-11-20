@@ -226,6 +226,13 @@
     "{ok} of {n} DLR receiver sessions bound": "{n} DLR alıcı oturumundan {ok} tanesi bağlandı",
     "the test machine's CPU: its event loop was busy, so it could not send faster": "test makinesinin CPU'su: olay döngüsü meşguldü, daha hızlı gönderemedi",
     // ---- Routing test ----
+    "Start this vendor again: it listens and accepts binds": "Bu vendor'ı yeniden başlatır: dinlemeye ve bind kabul etmeye başlar",
+    "Start vendor": "Vendor'ı başlat",
+    "Stop / start": "Durdur / başlat",
+    "Stop one vendor during the test (binds dropped, port closed) to check failover; the others keep running": "Failover'ı denemek için test sırasında bir vendor'ı durdurun (bind'ler düşer, port kapanır); diğerleri çalışmaya devam eder",
+    "Stop only this vendor: its binds drop and its port closes; the other vendors keep running": "Sadece bu vendor'ı durdurur: bind'leri düşer ve portu kapanır; diğer vendor'lar çalışmaya devam eder",
+    "Stop vendor": "Vendor'ı durdur",
+    "stopped": "durduruldu",
     "Back after": "Geri dönüş",
     "Backup for": "Yedek olduğu",
     "Bring up": "Aç",

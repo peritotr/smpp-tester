@@ -178,3 +178,5 @@ select.lang{min-width:52px}
 .rt-live .r{text-align:right;font-family:var(--mono)}
 .rt-log{margin:0;font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:pre-wrap;max-height:220px;overflow:auto}
 @media (max-width:1100px){.rt-live{grid-template-columns:1fr}}
+.rt-chip{display:inline-flex;align-items:center;gap:6px;margin-left:8px;white-space:nowrap}
+.rt-chip button{padding:2px 8px}
