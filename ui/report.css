@@ -59,3 +59,5 @@ tr.st-latency td{background:#c98a1314} tr.st-saturated td{background:#d9484814}
 }
 .scroll{overflow-x:auto}
 section h3{font-size:13px;margin:16px 0 6px}
+.rec-dl{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.rec-dl button{font:inherit;font-size:12px;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--text);cursor:pointer}

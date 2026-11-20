@@ -65,7 +65,7 @@
     <p class="lead">${lead}</p>
     <div class="kpis">${kpis.map(k => `<div class="kpi"><span>${esc(k[0])}</span><b>${k[1]}</b><i>${esc(k[2])}</i></div>`).join('')}</div>
   </section>
-  <section><h2>${esc(t('Findings'))}</h2><ul class="findings">${a.findings.map(f => `<li><span class="dot ${f.level}"></span><span>${esc(f.text)}</span></li>`).join('')}</ul></section>`;
+  <section><h2>${esc(t('Findings'))}</h2><ul class="findings">${[...a.findings.map(f => [f.level, f.text]), ...(window.RecordsUI ? RecordsUI.findings(T.records, '', t, N) : [])].map(([lv, tx]) => `<li><span class="dot ${lv}"></span><span>${esc(tx)}</span></li>`).join('')}</ul></section>`;
 
   if (a.criteria.length) html += `<section><h2>${esc(t('Acceptance criteria'))}</h2><table><thead><tr><th>${esc(t('Criterion'))}</th><th>${esc(t('Limit'))}</th><th>${esc(t('Measured'))}</th><th>${esc(t('Result'))}</th></tr></thead><tbody>
     ${a.criteria.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.lim)}</td><td class="mono">${esc(c.val)}</td><td class="${c.ok ? 'ok' : 'err'}"><b>${esc(c.ok ? t('Passed') : t('Failed'))}</b></td></tr>`).join('')}</tbody></table></section>`;
@@ -108,6 +108,7 @@
       ${allEv.map(e => `<tr><td class="mono" style="width:60px">${mmss(e.t)}</td><td class="${['session', 'error', 'timeout', 'sat'].includes(e.type) ? 'err' : ['throttle', 'onset', 'bindfail', 'window'].includes(e.type) ? 'warn' : ''}">${esc(e.txt)}</td></tr>`).join('') || `<tr><td class="muted">${esc(t('No events'))}</td></tr>`}
     </tbody></table></section>
   </div>
+  ${window.RecordsUI ? RecordsUI.section(T.records, t('Per-message records'), { esc, t, N }) : ''}
   <section><h2>${esc(t('Test settings'))}</h2><div class="grid2"><table class="kv"><tbody>
       <tr><td>${esc(t('Test type'))}</td><td>${esc(steps ? t('Step: {from} → {to} TPS, {n} steps × {s} s', { from: N(test.steps[0]), to: N(test.steps.at(-1)), n: test.steps.length, s: test.stepDur }) : t('Constant: {tps} TPS, {amount}', { tps: N(test.tps), amount: test.total ? t('{n} messages', { n: N(test.total) }) : N(test.duration) + ' s' }))}</td></tr>
       <tr><td>${esc(t('Worker threads'))}</td><td>${T.workers || 1}${test.rxSessions ? ' · ' + esc(t('{n} DLR receiver binds', { n: test.rxSessions })) : ''}</td></tr>
@@ -125,6 +126,7 @@
     <p class="note">${esc(t('Latency onset: p95 exceeding 2× the low-load baseline (at least +20 ms){crit} for 3 consecutive seconds. Saturation: accepted TPS staying below 90% of the target for 3 seconds.', { crit: test.criteria && test.criteria.p95Max ? t(' or the acceptance limit') : '' }))}</p>
   </section>`;
   $('report').innerHTML = html;
+  if (window.RecordsUI) RecordsUI.wire();
   }
   render();
 

@@ -7,10 +7,10 @@
 //   e.g. node tools/mini-router.js 2900 9053=127.0.0.1:2901:vendA:pw 9054=127.0.0.1:2902:vendB:pw
 const smpp = require('smpp');
 
-function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEvery = 0, textEvery = 0, stripEvery = 0, dcsEvery = 0, failover = false, log = () => {} }) {
+function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEvery = 0, textEvery = 0, stripEvery = 0, dcsEvery = 0, dupDlrEvery = 0, failover = false, log = () => {} }) {
   const vendors = [], customers = new Set(), byVendorId = new Map();
-  let seq = 0, nSub = 0, nDlr = 0, nDrop = 0, closed = false; let allUp = false;
-  const stats = { failedOver: 0, misrouted: 0, wrongDlr: 0, dropped: 0, textChanged: 0, stripped: 0, dcsChanged: 0 }; let nMod = 0;
+  let seq = 0, nSub = 0, nDlr = 0, nDrop = 0, nDup = 0, closed = false; let allUp = false;
+  const stats = { dupDlr: 0, failedOver: 0, misrouted: 0, wrongDlr: 0, dropped: 0, textChanged: 0, stripped: 0, dcsChanged: 0 }; let nMod = 0;
   const ownId = () => 'R' + (++seq).toString(36).toUpperCase();
 
   // Vendor connections are retried until the vendor listens (it may start after the router)
@@ -38,6 +38,7 @@ function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEv
     if (!to.bound) return;
     const txt = String(pdu.short_message.message).replace(/id:\S+/, 'id:' + m.own);
     to.deliver_sm({ esm_class: 4, source_addr: pdu.source_addr, destination_addr: pdu.destination_addr, short_message: txt, receipted_message_id: m.own, message_state: pdu.message_state || 2 });
+    if (dupDlrEvery && ++nDup % dupDlrEvery === 0) { stats.dupDlr++; setTimeout(() => to.bound && to.deliver_sm({ esm_class: 4, source_addr: pdu.source_addr, destination_addr: pdu.destination_addr, short_message: txt, receipted_message_id: m.own, message_state: pdu.message_state || 2 }), 200); }
   }
 
   const server = smpp.createServer(session => {
@@ -75,7 +76,7 @@ function miniRouter({ port, routes, misrouteEvery = 0, wrongDlrEvery = 0, dropEv
 if (require.main === module) {
   const [port, ...rest] = process.argv.slice(2);
   const routes = rest.map(a => { const [prefix, to] = a.split('='); return { prefix, to }; });
-  const r = miniRouter({ port: Number(port), routes, failover: !!process.env.FAILOVER, misrouteEvery: Number(process.env.MISROUTE_EVERY) || 0, wrongDlrEvery: Number(process.env.WRONG_DLR_EVERY) || 0, dropEvery: Number(process.env.DROP_EVERY) || 0, log: console.log });
+  const r = miniRouter({ port: Number(port), routes, failover: !!process.env.FAILOVER, misrouteEvery: Number(process.env.MISROUTE_EVERY) || 0, dupDlrEvery: Number(process.env.DUP_DLR_EVERY) || 0, wrongDlrEvery: Number(process.env.WRONG_DLR_EVERY) || 0, dropEvery: Number(process.env.DROP_EVERY) || 0, log: console.log });
   r.ready.then(() => console.log(`mini router on ${port}: ${routes.map(x => x.prefix + ' → ' + x.to.split(':').slice(0, 2).join(':')).join(', ')}`), e => { console.error(e.message); process.exit(1); });
 }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.0
+
+- **Per-message records** (load test and routing test, on by default: *Record every submit and DLR*): one row per submit with the message_id from submit_sm_resp, and one row per DLR received with receipted_message_id (TLV and text `id:`), message_state, stat, err, submit/done date, addresses, session, UTC ms. Written gzipped in a background thread, so the send rate holds (20,000 TPS with DLRs on 2 vCPU)
+- After the test the report shows submits, accepted, DLRs, distinct DLR ids, **messages with more than one DLR** (each arrival with time, stat and session, matched to its submit), accepted messages without a DLR and DLRs matching no submit; every list downloads as CSV. In a routing test per client
+- `tools/mini-router.js`: `DUP_DLR_EVERY` sends some DLRs twice
+
 ## 1.10.2
 
 - Routing test: each vendor now has a **Stop vendor / Start vendor** button right next to its bind state, beside *Stop vendors* (before, the button was only in the last, unlabelled column of the live vendor table). The live table column is labelled *Stop / start*

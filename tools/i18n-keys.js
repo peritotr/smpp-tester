@@ -9,7 +9,7 @@ const unq = s => s.replace(/\\'/g, "'").replace(/\\"/g, '"');
 
 // JS: t('…'), I18N.t('…'), msg('…'), err('…'), key: '…', label: '…' (single-quoted literals only)
 const jsFiles = ['ui/renderer.js', 'ui/load.js', 'ui/reports-ui.js', 'ui/vendor-msgs.js', 'ui/report.js', 'ui/analysis.js', 'ui/web-api.js',
-  'ui/routing.js', 'ui/routing-report.js', 'load-engine.js', 'load-cluster.js', 'mock-smsc.js', 'smpp-core.js', 'server.js', 'main.js', 'routing-run.js'];
+  'ui/routing.js', 'ui/routing-report.js', 'ui/records-ui.js', 'load-engine.js', 'load-cluster.js', 'load-worker.js', 'mock-smsc.js', 'smpp-core.js', 'server.js', 'main.js', 'routing-run.js'];
 const jsRe = [/\b(?:t|I18N\.t|msg|err|setPhase|phase)\(\s*'((?:[^'\\]|\\.)*)'/g, /\b(?:t|I18N\.t)\(\s*\"((?:[^\"\\]|\\.)*)\"/g, /\b_event\(\s*'\w+',\s*'((?:[^'\\]|\\.)*)'/g, /\b_(?:phase|log)\(\s*(?:'\w+',\s*)?'((?:[^'\\]|\\.)*\s(?:[^'\\]|\\.)*)'/g, /\b(?:key|infoKey|label):\s*'((?:[^'\\]|\\.)*)'/g, /[{,]\s*error:\s*'((?:[^'\\]|\\.)*)'/g];
 for (const f of jsFiles) {
   const src = fs.readFileSync(path.join(root, f), 'utf8');

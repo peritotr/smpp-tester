@@ -178,6 +178,7 @@
       <div class="opts">
         <label class="check"><input id="lDlr" type="checkbox" checked> <span data-i18n>Request DLR</span></label>
         <label class="check" title="A #T… marker is appended to the message; the built-in vendor picks it up to measure end-to-end latency, loss and duplicates" data-i18n-attr="title"><input id="lE2e" type="checkbox"> <span data-i18n>Measure end-to-end (client → platform → vendor)</span></label>
+        <label class="check" title="One row per submit (with its message_id) and per DLR received, saved with the report as CSV; the report lists messages with more than one DLR and messages without one" data-i18n-attr="title"><input id="lRecord" type="checkbox" checked> <span data-i18n>Record every submit and DLR</span></label>
         <label class="check" title="On ESME_RTHROTTLED / ESME_RMSGQFUL, slow down and resend the message" data-i18n-attr="title"><input id="lRetry" type="checkbox" checked> <span data-i18n>Slow down and retry on throttle</span></label>
         <details class="crit"><summary data-i18n>Acceptance criteria</summary>
           <div class="critgrid">
@@ -261,6 +262,7 @@
         <label><span data-i18n>DLR wait (s)</span> <input id="rtDlrWait" type="number" value="15" min="0"></label>
         <label class="grow"><span data-i18n>Message</span> <input id="rtText" value="Routing test" spellcheck="false"></label>
         <label class="check"><input id="rtDlr" type="checkbox" checked> <span data-i18n>Request DLR</span></label>
+        <label class="check" title="One row per submit (with its message_id) and per DLR received, saved with the report as CSV; the report lists messages with more than one DLR and messages without one" data-i18n-attr="title"><input id="rtRecord" type="checkbox" checked> <span data-i18n>Record every submit and DLR</span></label>
       </div>
       <div class="opts">
         <span id="rtPhase" class="muted"></span>

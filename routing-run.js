@@ -162,7 +162,7 @@ class RoutingRun extends EventEmitter {
         sessions: d.sessions, window: d.window, tps: d.tps, duration: spec.duration, ramp: spec.ramp, dlr: spec.dlr !== false, dlrWait: spec.dlrWait,
         respTimeout: spec.respTimeout, retryThrottle: true, src: d.src || spec.src || 'TEST', srcTon: spec.srcTon ?? 5, srcNpi: spec.srcNpi ?? 0,
         dst: d.dst, dstTon: spec.dstTon ?? 1, dstNpi: spec.dstNpi ?? 1, text: spec.text || 'Routing test', encoding: spec.encoding || 'auto',
-        e2e: true, clientTag: c.tag,
+        e2e: true, clientTag: c.tag, record: spec.record !== false && !!this.recordDir, recordDir: this.recordDir || '',
       } });
     }
     this.timer = setInterval(() => this._second(), 1000);
@@ -304,8 +304,10 @@ class RoutingRun extends EventEmitter {
       failover: sum(matrix, r => r.fo), wrongDlr: sum(dlrCross, x => x.n), unknown: sum(matrix.filter(r => !r.client), r => r.received),
       ...['marked', 'unmarked', 'broken', 'textChanged', 'dcsChanged'].reduce((o, k) => (o[k] = sum(vendors, v => v.stats && v.stats.routing && v.stats.routing.content && v.stats.routing.content[k]), o), {}),
       clientErrors: clients.filter(c => c.error).length,
+      // From the per-message records: messages whose client got more than one DLR
+      dupDlr: sum(clients, c => c.totals && c.totals.records && c.totals.records.duplicateIds),
     };
-    const issues = [tot.lost, tot.dup, tot.misroute, tot.wrongDlr, tot.clientErrors, tot.unmarked + tot.broken, tot.textChanged, tot.dcsChanged].filter(Boolean).length;
+    const issues = [tot.lost, tot.dup, tot.misroute, tot.wrongDlr, tot.clientErrors, tot.unmarked + tot.broken, tot.textChanged, tot.dcsChanged, tot.dupDlr].filter(Boolean).length;
     return {
       version: 1, kind: 'routing', name: S.name || '', createdAt: Date.now(), startedAt: this.startedAt, endedAt: Date.now(),
       test: { duration: S.duration, ramp: S.ramp, dlr: S.dlr !== false, dlrWait: S.dlrWait, respTimeout: S.respTimeout, text: S.text, encoding: S.encoding },

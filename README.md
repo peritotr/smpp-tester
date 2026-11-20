@@ -161,6 +161,15 @@ The response time is split in two:
 
 The **event loop** delay (p99) and how busy it was are measured per thread every second. If sending stays below the target while a thread is busy more than 90% of the time or its delay p99 is above 50 ms, the test says the test machine is the limit (instead of advising a bigger window): use more worker threads or a bigger machine. In that case the server response time also includes the time the busy machine took to read the response.
 
+### Per-message records
+
+With **Record every submit and DLR** on (the default, in the load test and the routing test), the client writes one row per submit and one row per DLR it receives, gzipped next to the reports (`data/records`), in a background thread so the send rate is not affected:
+
+- **Submits**: `sent_utc`, `system_id`, `session`, `dest_addr`, `message_id` (from submit_sm_resp), `resp_utc`, `status`, `sequence`
+- **DLRs**: `received_utc`, `system_id`, `session`, `receipted_message_id` (TLV 0x001E), `text_id` (`id:` in the text), `message_state` (TLV 0x0427), `stat`, `err`, `submit_date`, `done_date`, `source_addr`, `dest_addr`, `sequence`
+
+Times are UTC with milliseconds. When the test ends they are read back and the report gets a summary: submits sent, accepted, DLRs received, distinct `receipted_message_id`, **messages with more than one DLR** (with every arrival time, stat and session), accepted messages without a DLR, and DLRs that match no submit. Each list downloads as CSV from the report. In a routing test this is per client (system_id). The files are deleted with the report. Size: about 25 MB per million messages (submits and DLRs); the summary of a 30-minute 10k TPS test takes a few minutes and a few GB of memory.
+
 ### Choosing sessions and window
 
 The client can never send faster than `sessions × window ÷ response time`: every session holds at most *window* submit_sm waiting for a response. With 12 sessions, window 100 and 125 ms responses that is 9,600 TPS, whatever the target. So size the window per session to at least

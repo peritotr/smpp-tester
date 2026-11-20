@@ -48,6 +48,9 @@ class ReportStore {
   remove(id) {
     if (!/^[\w-]+$/.test(String(id))) return false;
     const rep = this.get(id);
+    // Per-message records of the test (one run per client in a routing test)
+    const recDir = path.join(path.dirname(this.dir), 'records');
+    for (const T of [rep && rep.totals, ...((rep && rep.clients) || []).map(c => c.totals)]) if (T && T.records && T.records.run) require('./records').removeRun(recDir, T.records.run);
     for (const v of (rep && rep.vendors) || []) { const f = v.evidence && this.evidencePath(v.evidence.file); if (f) try { fs.unlinkSync(f); } catch {} }
     try { fs.unlinkSync(path.join(this.dir, id + '.json')); } catch {}
     this._writeIdx(this._idx().filter(e => e.id !== id)); return true;

@@ -20,6 +20,15 @@ const msg = (key, p) => ({ key, p, text: fill(key, p) });
 const err = (key, p) => Object.assign(new Error(fill(key, p)), { key, p });
 
 const { Hist } = require('./hist');
+const { Recorder } = require('./records');
+// UTC time with ms, as in toISOString(), without a Date object per call (per-message records at high rates)
+let isoSec = -1, isoPre = '';
+const iso = ms => {
+  const t = Math.floor(ms), sec = Math.floor(t / 1000);
+  if (sec !== isoSec) { isoSec = sec; isoPre = new Date(sec * 1000).toISOString().slice(0, 20); }
+  const r = t - sec * 1000; return isoPre + (r < 10 ? '00' : r < 100 ? '0' : '') + r + 'Z';
+};
+const hex8 = n => '0x' + (n >>> 0).toString(16).padStart(8, '0');
 
 class LoadEngine extends EventEmitter {
   constructor() { super(); this.running = false; }
@@ -53,6 +62,9 @@ class LoadEngine extends EventEmitter {
       shard: !!t.shard,
       // Extra receiver binds that only take DLRs; the sending binds are then transmitters
       rxSessions: Math.max(0, Math.min(32, Math.floor(Number(t.rxSessions) || 0))),
+      // Per-message records (records.js): folder, test id, worker number, and where this engine's session numbers start
+      record: !!(t.record && t.recordDir && t.recordRun), recordDir: t.recordDir || '', recordRun: t.recordRun || '', recordPart: Math.max(1, Number(t.recordPart) || 1),
+      sessionBase: Math.max(0, Math.floor(Number(t.sessionBase) || 0)),
       criteria: t.criteria || {},
     };
     // Step test: from the start TPS to the target TPS, fixed duration per step
@@ -68,6 +80,11 @@ class LoadEngine extends EventEmitter {
     this.events = []; this.flags = {};
 
     this._buildTemplates(t);
+    this.rec = null; this.sid = String(cfg.systemId || '');
+    if (this.t.record) {
+      try { this.rec = new Recorder(this.t.recordDir, this.t.recordRun, this.t.recordPart); }
+      catch (e) { this.emit('log', msg('Per-message records not written: {msg}', { msg: e.message })); }
+    }
     this.sessions = []; this.rr = 0;
     this.G = { sent: 0, ok: 0, err: 0, timeouts: 0, throttled: 0, retries: 0, dlr: 0, dlrOk: 0, dlrFail: 0, dlrUnmatched: 0, windowFullMs: 0, errs: {}, dlrStats: {}, okByDst: {} };
     this.unmatchedIds = [];
@@ -93,7 +110,7 @@ class LoadEngine extends EventEmitter {
     const failedErr = res.filter(r => r.status === 'rejected').map(r => r.reason || {});
     const failed = failedErr.map(e => e.message);
     if (!this.sessions.length) {
-      this._closeAll(); this.running = false;
+      this._closeAll(); this.running = false; if (this.rec) { this.rec.close(); this.rec = null; }
       const e0 = failedErr[0];
       this.emit('phase', { phase: 'error', ...(e0 && e0.key ? msg(e0.key, e0.p) : e0 && e0.message ? { text: e0.message } : msg('No session could bind')) }); return;
     }
@@ -170,7 +187,9 @@ class LoadEngine extends EventEmitter {
         tagOff = buf.lastIndexOf(encode(ZERO, enc));
         if (tagOff > 0) tagOff += enc === 'ucs2' ? 4 : 2; // first digit after '#T'
       }
-      return { buf, xs, tagOff, ucs2: enc === 'ucs2' };
+      // Where the recipient is in the PDU (for the per-message records)
+      const dstAt = buf.indexOf(Buffer.from(dst + '\0', 'latin1'), 16);
+      return { buf, xs, tagOff, ucs2: enc === 'ucs2', dstAt, dstLen: dst.length };
     });
   }
 
@@ -195,7 +214,7 @@ class LoadEngine extends EventEmitter {
       s.on('close', () => { const was = st.bound; st.bound = false; if (this.running && !this.stopping && was) this._event('session', 'Session {n} disconnected', { n: i + 1 }); });
       s.on('enquire_link', p => s.send(p.response()));
       // Before the fast reader takes over (right after the bind) a deliver_sm still comes from the library
-      s.on('deliver_sm', p => { const m = p.short_message && p.short_message.message; this._onDeliver(st, { seq: p.sequence_number, esm: p.esm_class, src: p.source_addr, rid: p.receipted_message_id || '', state: p.message_state, sm: Buffer.isBuffer(m) ? m : Buffer.from(String(m || ''), 'latin1') }); });
+      s.on('deliver_sm', p => { const m = p.short_message && p.short_message.message; this._onDeliver(st, { seq: p.sequence_number, esm: p.esm_class, src: p.source_addr, dst: p.destination_addr, rid: p.receipted_message_id || '', state: p.message_state, sm: Buffer.isBuffer(m) ? m : Buffer.from(String(m || ''), 'latin1') }); });
       s.on(cfg.tls ? 'secureConnect' : 'connect', () => {
         // With DLR receiver sessions: those bind as receivers, the sending ones as transmitters
         const fn = rx ? 'bind_receiver' : this.t.rxSessions ? 'bind_transmitter' : { trx: 'bind_transceiver', tx: 'bind_transmitter', rx: 'bind_transceiver' }[cfg.bindMode || 'trx'];
@@ -263,7 +282,7 @@ class LoadEngine extends EventEmitter {
   // deliver_sm fields the engine needs: esm_class, receipted_message_id (0x001E), message_state (0x0427), text
   _decodeDeliver(b, p, end, seq) {
     const cs = () => { const z = b.indexOf(0, p); const v = b.toString('latin1', p, z < 0 || z >= end ? end : z); p = (z < 0 || z >= end ? end : z) + 1; return v; };
-    cs(); p += 2; const src = cs(); p += 2; cs();          // service_type, source, destination
+    cs(); p += 2; const src = cs(); p += 2; const dst = cs(); // service_type, source, destination
     const esm = b[p]; p += 3; cs(); cs(); p += 2;          // esm, protocol, priority, schedule, validity, registered, replace
     const dcs = b[p]; p += 2; const smLen = b[p++]; let sm = b.subarray(p, Math.min(end, p + smLen)); p += smLen;
     let rid = '', state = null;
@@ -274,7 +293,7 @@ class LoadEngine extends EventEmitter {
       else if (tag === 0x0424 && !smLen) sm = b.subarray(v, v + l);
       p = v + l;
     }
-    return { seq, esm, dcs, src, rid, state, sm };
+    return { seq, esm, dcs, src, dst, rid, state, sm };
   }
 
   _queueRaw(st, r) { st.out.push(r); if (!st.flushQ) { st.flushQ = true; setImmediate(() => { st.flushQ = false; this._flush(st); }); } }
@@ -347,6 +366,7 @@ class LoadEngine extends EventEmitter {
     b.writeUInt32BE(seq, 12);
     // tq: queued now; tw: set when the bytes are handed to the socket (_flush)
     const rec = { tq: now(), tw: 0, ti };
+    if (this.rec) { rec.seq = seq; rec.dst = tp.dstAt > 0 ? b.toString('latin1', tp.dstAt, tp.dstAt + tp.dstLen) : this.dsts[ti]; }
     st.inflight++; st.sent.set(seq, rec);
     st.out.push(b); st.outRecs.push(rec);
     this.G.sent++; this.S.sent++;
@@ -371,6 +391,7 @@ class LoadEngine extends EventEmitter {
     st.sent.delete(seq); st.inflight--;
     const t = now(), tw = rec.tw || t, lat = t - tw, q = tw - rec.tq, t0 = tw;
     this.S.lat.add(lat); this.latAll.add(lat); this.S.q.add(q); this.qAll.add(q);
+    if (this.rec) this.rec.submit([iso(epoch(tw)), this.sid, this.t.sessionBase + st.i + 1, rec.dst, messageId, iso(epoch(t)), hex8(cs), seq]);
     if (cs === 0) {
       this.G.ok++; this.S.ok++;
       const d = this.dsts[rec.ti]; this.G.okByDst[d] = (this.G.okByDst[d] || 0) + 1;
@@ -406,7 +427,12 @@ class LoadEngine extends EventEmitter {
     let id = d.rid, stat;
     const txt = d.sm.toString('latin1');
     const m1 = /stat:(\w+)/i.exec(txt); stat = m1 ? m1[1].toUpperCase() : (d.state === 2 ? 'DELIVRD' : 'STATE' + d.state);
-    if (!id) { const m2 = /id:(\S+)/i.exec(txt); id = m2 && m2[1]; }
+    const m2 = /id:(\S+)/i.exec(txt), textId = m2 ? m2[1] : '';
+    if (!id) id = textId;
+    if (this.rec) {
+      const f = re => { const m = re.exec(txt); return m ? m[1] : ''; };
+      this.rec.dlr([iso(epoch(now())), this.sid, this.t.sessionBase + st.i + 1, d.rid || '', textId, d.state ?? '', m1 ? m1[1].toUpperCase() : '', f(/err:(\S+)/i), f(/submit date:(\d+)/i), f(/done date:(\d+)/i), d.src || '', d.dst || '', d.seq]);
+    }
     this.G.dlr++; this.S.dlr++;
     this.G.dlrStats[stat] = (this.G.dlrStats[stat] || 0) + 1;
     stat === 'DELIVRD' ? this.G.dlrOk++ : this.G.dlrFail++;
@@ -430,6 +456,7 @@ class LoadEngine extends EventEmitter {
     for (const st of this.sessions) for (const [seq, rec] of st.sent) {
       if (t - rec.tq < this.t.respTimeout) break; // Map insertion order = time order
       if (!this.flags.to) { this.flags.to = true; this._event('timeout', 'First response timeout'); }
+      if (this.rec) this.rec.submit([iso(epoch(rec.tw || rec.tq)), this.sid, this.t.sessionBase + st.i + 1, rec.dst, '', '', 'TIMEOUT', seq]);
       st.sent.delete(seq); delete st.s._callbacks[seq]; st.inflight--; this.G.timeouts++; this.G.err++; this.S.err++; this.S.to = (this.S.to || 0) + 1;
       this.G.errs['TIMEOUT'] = (this.G.errs['TIMEOUT'] || 0) + 1;
     }
@@ -525,7 +552,8 @@ class LoadEngine extends EventEmitter {
     this.emit('phase', { phase: 'draining', ...msg(this.t.dlr ? 'Waiting for responses and DLRs…' : 'Waiting for responses…') });
   }
 
-  _finish() {
+  async _finish() {
+    if (this.finishing) return; this.finishing = true;
     clearInterval(this.secTimer); this.secTimer = null;
     clearInterval(this.batchTimer); this.batchTimer = null; if (this.t.shard) this._sendBatch();
     try { this.loop.disable(); } catch {}
@@ -535,16 +563,19 @@ class LoadEngine extends EventEmitter {
     // whether a DLR went to the wrong client
     const ids = this.t.clientTag ? { unmatched: this.unmatchedIds, pending: [...this.pendingDlr.keys()].slice(0, 300000) } : undefined;
     this._closeAll();
-    this.running = false; this.drainUntil = null; this.sendEnd = null;
+    // Per-message records: wait until everything is on disk
+    let records;
+    if (this.rec) { const rows = this.rec.rows; await this.rec.close(); records = { dir: this.t.recordDir, run: this.t.recordRun, rows }; this.rec = null; }
+    this.running = false; this.drainUntil = null; this.sendEnd = null; this.finishing = false;
     this._event('done', 'Test finished');
-    this.emit('done', { totals, ids, series: this.series, events: this.events, startedAt: this.startedAt, endedAt: Date.now(),
+    this.emit('done', { totals, ids, records, series: this.series, events: this.events, startedAt: this.startedAt, endedAt: Date.now(),
       test: { ...this.t, respTimeout: this.t.respTimeout / 1000, dlrWait: this.t.dlrWait / 1000 } });
     this.emit('phase', { phase: 'done', ...msg('Done') });
   }
 
   stop() {
     if (!this.running) return;
-    if (this._go) { this.aborted = true; this.go(); this._closeAll(); this.running = false; this.emit('phase', { phase: 'error', ...msg('Stopped while binding') }); return; }
+    if (this._go) { this.aborted = true; this.go(); this._closeAll(); this.running = false; if (this.rec) { this.rec.close(); this.rec = null; } this.emit('phase', { phase: 'error', ...msg('Stopped while binding') }); return; }
     if (this.binding) {
       // Stop during binding: close open connections and cancel the test
       this.aborted = true;

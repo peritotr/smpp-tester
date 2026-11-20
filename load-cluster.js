@@ -44,13 +44,15 @@ class LoadCluster extends EventEmitter {
     this.rowsByT = new Map(); this.done = 0; this.drained = false;
     this.emit('phase', { phase: 'binding', ...msg('Binding {n} sessions…', { n: S }) });
 
+    let base = 0;
     this.shards = sess.map((s, i) => {
+      const sessionBase = base; base += s;
       const f = s / S, w = new Worker(path.join(__dirname, 'load-shard.js'));
       const sh = { i, w, sessions: s, live: true, ready: false, failed: false, row: null, totals: null, done: null, phase: 'binding' };
       w.on('message', m => this._onShard(sh, m.type, m.d));
       w.on('error', e => { this._log(msg('Worker {n} error: {msg}', { n: i + 1, msg: e.message })); this._shardGone(sh); });
       w.on('exit', () => { if (!sh.done) this._shardGone(sh); });
-      const t = { ...test, sessions: s, rxSessions: rx[i], tps: (Number(test.tps) || 1000) * f, total: total ? totals[i] : 0, shardTag: i + 1, shard: true, workers: 1 };
+      const t = { ...test, sessions: s, rxSessions: rx[i], tps: (Number(test.tps) || 1000) * f, total: total ? totals[i] : 0, shardTag: i + 1, shard: true, workers: 1, recordPart: i + 1, sessionBase };
       if (test.steps) t.steps = { start: (Number(test.steps.start) || Number(test.steps.inc)) * f, inc: Number(test.steps.inc) * f, dur: test.steps.dur };
       w.postMessage({ type: 'start', cfg, test: t });
       return sh;
@@ -236,7 +238,10 @@ class LoadCluster extends EventEmitter {
       if (list.at(-1) < max) list.push(max);
       test.steps = list; test.stepDur = Number(st.dur); test.duration = t0.done.test.duration;
     }
-    this.emit('done', { totals, series: this.series, events: ev, startedAt: this.startedAt, endedAt: Date.now(), test });
+    // Per-message records: one file pair per worker, same test id
+    const recs = this.shards.map(s => s.done && s.done.records).filter(Boolean);
+    const records = recs.length ? { dir: recs[0].dir, run: recs[0].run, rows: { submits: recs.reduce((a, r) => a + r.rows.submits, 0), dlrs: recs.reduce((a, r) => a + r.rows.dlrs, 0) } } : undefined;
+    this.emit('done', { totals, records, series: this.series, events: ev, startedAt: this.startedAt, endedAt: Date.now(), test });
     this.emit('phase', { phase: 'done', ...msg('Done') });
   }
 

@@ -1,5 +1,5 @@
 // Load test view (uses $, val, setVal, esc, t, tm and CONN_FIELDS from renderer.js)
-const LOAD_FIELDS = ['lSrc','lSrcTon','lSrcNpi','lDst','lDstTon','lDstNpi','lText','lEncoding','lSessions','lWindow','lGwWindow','lWorkers','lRxSessions','lTps','lMode','lAmount','lRamp','lRespTimeout','lDlrWait','lDlr','lRetry','lE2e','lName','lStepStart','lStepInc','lStepDur','cP95','cP99','cE2e','cErr','cLoss','cMinTps'];
+const LOAD_FIELDS = ['lSrc','lSrcTon','lSrcNpi','lDst','lDstTon','lDstNpi','lText','lEncoding','lSessions','lWindow','lGwWindow','lWorkers','lRxSessions','lTps','lMode','lAmount','lRamp','lRespTimeout','lDlrWait','lDlr','lRetry','lE2e','lRecord','lName','lStepStart','lStepInc','lStepDur','cP95','cP99','cE2e','cErr','cLoss','cMinTps'];
 const fmt = n => n == null || isNaN(n) ? '—' : Math.round(n).toLocaleString(I18N.locale);
 const fms = n => n == null || isNaN(n) ? '—' : (n < 10 ? n.toFixed(1) : Math.round(n).toString());
 
@@ -70,7 +70,7 @@ $('lStart').onclick = async () => {
       errMaxPct: val('cErr') === '' ? null : Number(val('cErr')), lossMaxPct: e2eOn && val('cLoss') !== '' ? Number(val('cLoss')) : null,
       minTps: Number(val('cMinTps')) || Number(val('lTps')),
     },
-    ramp: val('lRamp'), respTimeout: val('lRespTimeout'), dlrWait: val('lDlrWait'), dlr: val('lDlr'), retryThrottle: val('lRetry'),
+    ramp: val('lRamp'), respTimeout: val('lRespTimeout'), dlrWait: val('lDlrWait'), dlr: val('lDlr'), retryThrottle: val('lRetry'), record: val('lRecord'),
     src: val('lSrc'), srcTon: val('lSrcTon'), srcNpi: val('lSrcNpi'), dst: val('lDst'), dstTon: val('lDstTon'), dstNpi: val('lDstNpi'),
     text: val('lText'), encoding: val('lEncoding'), e2e: e2eOn,
   };

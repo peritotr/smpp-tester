@@ -134,3 +134,32 @@ test('failover: one vendor taken down and brought back during the test', async (
   assert.ok(rep.totals.failover > 100);
   assert.equal(rep.matrix.find(m => m.prefix === '9054').fo, rep.totals.failover);
 });
+
+test('per-message records: duplicate DLRs found per message, every submit and DLR in the CSV', async () => {
+  const rp = freePort(), va = freePort(), vb = freePort(), dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-rec-'));
+  const router = miniRouter({ port: rp, dupDlrEvery: 25, routes: [{ prefix: '9053', to: `127.0.0.1:${va}:vendA:pw` }, { prefix: '9054', to: `127.0.0.1:${vb}:vendB:pw` }] });
+  const r = new RoutingRun(spawn); r.recordDir = dir;
+  const done = new Promise(res => r.on('done', res));
+  await r.start({ duration: 3, ramp: 0, dlr: true, dlrWait: 3, respTimeout: 5, text: 'Records',
+    vendors: [{ name: 'A', port: va, systemId: 'vendA', password: 'pw', prefixes: '9053', dlrDelay: 100 }, { name: 'B', port: vb, systemId: 'vendB', password: 'pw', prefixes: '9054', dlrDelay: 100 }],
+    clients: [{ name: 'C1', host: '127.0.0.1', port: rp, systemId: 'test-route-1', sessions: 2, window: 50, tps: 300, dst: '9053XXXXXXXX, 9054XXXXXXXX' },
+              { name: 'C2', host: '127.0.0.1', port: rp, systemId: 'test-route-2', sessions: 2, window: 50, tps: 300, dst: '9053XXXXXXXX, 9054XXXXXXXX' }] });
+  const rep = await done; router.close();
+  const R = rep.clients.map(c => c.totals.records);
+  assert.ok(R.every(x => x && x.run && !x.error), JSON.stringify(R));
+  assert.equal(R[0].duplicateIds + R[1].duplicateIds, router.stats.dupDlr, 'every message that got a second DLR');
+  assert.equal(R[0].extraDlrs + R[1].extraDlrs, router.stats.dupDlr);
+  for (const [k, x] of R.entries()) {
+    const T = rep.clients[k].totals;
+    assert.equal(x.submits, T.sent); assert.equal(x.accepted, T.ok); assert.equal(x.dlrs, T.dlr);
+    assert.equal(x.uniqueDlrs, T.ok); assert.equal(x.missing, 0); assert.equal(x.unmatched, 0);
+    if (x.duplicateIds) { const e = x.examples[0]; assert.equal(e.n, 2); assert.equal(e.at.length, 2); assert.ok(e.sent && e.dst); }
+  }
+  const lines = zlib.gunzipSync(fs.readFileSync(path.join(dir, `${R[0].run}-w1-dlrs.csv.gz`))).toString().trim().split('\n');
+  assert.equal(lines.length, R[0].dlrs);
+  const f = lines[0].split(',');
+  assert.match(f[0], /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/); assert.equal(f[1], 'test-route-1'); assert.ok(f[3], 'receipted_message_id'); assert.equal(f[6], 'DELIVRD');
+  const dup = zlib.gunzipSync(fs.readFileSync(path.join(dir, `${R[0].run}-duplicates.csv.gz`))).toString().trim().split('\n').filter(Boolean);
+  assert.equal(dup.length, R[0].duplicateIds);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

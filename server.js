@@ -19,12 +19,14 @@ const { WebSocketServer } = require('ws');
 const { SmppClient, analyze } = require('./smpp-core');
 const { ReportStore, assembleReport } = require('./reports');
 const { RoutingRun } = require('./routing-run');
+const records = require('./records');
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
 const PASSWORD = process.env.UI_PASSWORD || '';
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const UI_DIR = path.join(__dirname, 'ui');
+const RECORDS_DIR = path.join(DATA_DIR, 'records');   // per-message records of load tests (records.js)
 
 if (!PASSWORD || PASSWORD.length < 8) {
   console.error('ERROR: the UI_PASSWORD environment variable must be at least 8 characters.');
@@ -170,7 +172,7 @@ const routing = new RoutingRun((file, onMsg) => {
   p.on('message', onMsg);
   return { post: m => { if (p.connected) p.send(m); }, kill: () => p.kill(), onExit: f => p.on('exit', f) };
 });
-routing.evidenceDir = reports.evidenceDir;
+routing.evidenceDir = reports.evidenceDir; routing.recordDir = RECORDS_DIR;
 state.routing = { phase: 'idle' }; let routingTick = null;
 routing.on('phase', m => { state.routing = { ...m, reportId: m.phase === 'starting' ? null : state.routing.reportId }; broadcast('routing:phase', state.routing); });
 routing.on('tick', m => { routingTick = m; broadcast('routing:tick', m); });
@@ -225,7 +227,7 @@ const handlers = {
     if (['binding', 'running', 'draining'].includes(state.load.phase)) return { ok: false, error: 'A test is already running' };
     state.load = { phase: 'binding', text: 'Starting…', key: 'Starting…', test: { tps: test && test.tps, e2e: !!(test && test.e2e) } }; broadcast('load:phase', state.load);
     loadSeries = []; loadTotals = null; loadReq = { cfg: { ...cfg, password: undefined }, test }; mockE2e = null;
-    getLoad().send({ type: 'start', cfg, test }); return { ok: true };
+    getLoad().send({ type: 'start', cfg, test: { ...test, recordDir: RECORDS_DIR } }); return { ok: true };
   },
   'load:stop': () => { if (loadProc) loadProc.send({ type: 'stop' }); return { ok: true }; },
   'routing:start': async spec => {
@@ -301,6 +303,14 @@ const server = http.createServer((req, res) => {
   if (!validToken(cookieOf(req))) {
     if (url.pathname === '/' || url.pathname.endsWith('.html')) { res.writeHead(303, { Location: '/login' }); return res.end(); }
     res.writeHead(401, SEC_HEADERS); return res.end();
+  }
+
+  // Per-message records of a test (submits, DLRs, duplicates, missing, unmatched) as plain CSV
+  if (url.pathname === '/records') {
+    const run = url.searchParams.get('run') || '', kind = url.searchParams.get('kind') || '';
+    if (!records.runFiles(RECORDS_DIR, run, kind).length) { res.writeHead(404, SEC_HEADERS); return res.end(); }
+    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${run}-${kind}.csv"`, ...SEC_HEADERS });
+    return records.pipeCsv(RECORDS_DIR, run, kind, res).catch(() => res.destroy());
   }
 
   // Routing test evidence: the vendor's gzipped CSV, sent as plain CSV
